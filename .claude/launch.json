@@ -1,0 +1,20 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "squawk-server",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": [
+        "run",
+        "-p",
+        "squawk-server",
+        "--",
+        "--config",
+        "dev.toml",
+        "--port",
+        "8477"
+      ],
+      "port": 8477
+    }
+  ]
+}

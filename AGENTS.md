@@ -12,20 +12,24 @@ An open **partyline intercom** — Green-Go / Bolero / Clear-Com shaped. A serve
 endpoints talk and listen. Each endpoint has up to 10 keys; each key is its own stream
 carrying either a partyline (mix-minus) or a direct point-to-point path.
 
-Rust workspace. Currently **two crates and no binaries** — the engine exists, nothing
-that plays audio or sends a packet does.
+Rust workspace: `squawk-core` (model), `squawk-engine` (mixer), `squawk-server` (host +
+HTTP/WS + browser UI).
 
 ## 2. What is actually verified
 
 Be precise about this in anything you write for the user. The engine's behaviour is
-covered by tests that assert *sample-exact* mix-minus, and they pass. Beyond that:
+covered by tests that assert *sample-exact* mix-minus, and the server has been driven
+end to end in a browser against the real engine. Beyond that:
 
+- **Every microphone is a synthesised tone.** `host.rs` runs a `SimulatedSource`.
+- The engine is paced off `Instant`, not a media clock.
 - No RTP packet has ever been sent or received.
 - No PTP clock has been locked.
 - No audio device has been opened.
 - No hardware exists.
 
-Do not describe this project as working intercom. It is a mixer with a test bench.
+Do not describe this project as working intercom. It is a mixer, a config UI, and a
+test bench.
 
 ## 3. The model, in one paragraph
 
@@ -82,6 +86,23 @@ feeds `process()` must already have resampled and aligned every input into the s
 clock domain. That is the jitter buffer's job, and it does not exist yet. An engine fed
 unaligned inputs fails quietly.
 
+### Talk intent lives in the host, not the engine
+
+Editing the config rebuilds the engine, and a rebuilt engine starts with every key
+released. `host.rs` keeps the authoritative talk map keyed by **endpoint id and slot** —
+names that survive a rebuild, unlike the integer indices the engine uses — and re-applies
+it after every rebuild. Move that state into the engine and adding a partyline will
+silently drop every live talk key in the building.
+
+### `ProblemKind` must stay adjacently tagged
+
+`#[serde(tag = "kind", content = "detail")]`. Several variants are newtypes over an id,
+which serialises as a string, and an *internally* tagged enum can only wrap values that
+serialise as a map. Switching to `tag` alone compiles fine and then returns 500 from
+every endpoint that reports a problem — and **only when there is a problem to report**,
+so a clean config hides it completely. That is exactly how it got shipped and caught
+once already.
+
 ### Stream index ordering is load-bearing
 
 Streams are allocated endpoint-major then slot-order, and the RTP layer will pin
@@ -98,17 +119,33 @@ destinations to those indices for the life of a config. Test:
 - **Block size is the packet time.** 48 samples at 48 kHz = 1 ms = one RTP packet. Never
   re-block between the mixer and the network.
 
-## 6. Commands
+## 6. The server
+
+`squawk-server` is headless on purpose. Tray packaging comes from
+[`av-launcher`](../av-launcher), the fleet's shared tray shell — the same arrangement
+srt-router, flock and RFutils use. Do not build a bespoke tray here.
+
+The API is **state-shaped, not patch-shaped**: every mutation returns the whole config
+plus its problems, and the UI re-renders from that. Intercom configs are tens of
+endpoints; a UI that cannot drift out of step with the server is worth more than the
+bytes saved by returning deltas.
+
+Deleting a partyline or an endpoint **cascades** to the keys pointing at it. The
+alternative leaves a config the engine refuses to build, which is a worse place to
+strand someone than a cascade they can undo.
+
+## 7. Commands
 
 ```bash
 cargo test --workspace
 cargo clippy --workspace --all-targets
+cargo run -p squawk-server -- --config squawk.example.toml    # UI on :8477
 cargo test --release -p squawk-engine --test scale -- --nocapture   # timing
 ```
 
-## 7. Where this is going
+## 8. Where this is going
 
-See the task list in the README status table. Next up is the AES67 transport, then the
-server tray app (which should wrap [`av-launcher`](../av-launcher) rather than build its
-own tray — that is the established fleet pattern for "tray app with a browser UI", used
-by srt-router, flock and RFutils).
+See the README status table. Next up is the AES67 transport — RTP tx/rx, jitter buffers,
+SDP/SAP and PTP. That is also what replaces `SimulatedSource` and the `Instant`-based
+pacer in `host.rs`, and what finally satisfies the aligned-input precondition the whole
+mix-minus design rests on.

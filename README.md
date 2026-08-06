@@ -2,9 +2,11 @@
 
 > **AI-assisted project.** This codebase was created with [Claude](https://claude.com/claude-code)
 > (Anthropic), directed and reviewed by a human author. The mix engine is covered by
-> behavioural tests that assert sample-exact mix-minus, and those pass. **Nothing here
-> has yet touched a network card, a sound card, a PTP clock or an intercom panel** —
-> the AES67 transport, the server, the clients and the hardware do not exist yet.
+> behavioural tests that assert sample-exact mix-minus, and the server and browser UI
+> have been exercised end to end against the real engine. **But every microphone is a
+> synthesised tone.** Nothing here has yet touched a network card, a sound card, a PTP
+> clock or an intercom panel — the AES67 transport, the clients and the hardware do
+> not exist yet.
 
 An open **partyline intercom** system — the software half of a Green-Go / Bolero /
 Clear-Com style comms rig. A server mixes; endpoints talk and listen.
@@ -20,8 +22,9 @@ levels, mutes and ear placement instantly and locally, with no round trip to the
 |---|---|
 | Data model, config, validation (`squawk-core`) | Built and tested |
 | Mix-minus engine (`squawk-engine`) | Built and tested |
+| Server + browser UI (`squawk-server`) | Built and tested, **on simulated audio** |
 | AES67 transport — RTP, SDP/SAP, PTP | Not started |
-| Server tray app + browser UI | Not started |
+| Tray packaging (via `av-launcher`) | Not started |
 | Desktop client station | Not started |
 | Opus/WebRTC leg for phones and browsers | Not started |
 | Hardware endpoint (ESP32 / Pi class) | Not started |
@@ -78,17 +81,43 @@ packets per second outbound, which has to be batched per tick (`sendmmsg`) from 
 start — it is not something that can be retrofitted. Bandwidth is the lesser problem at
 roughly 1.6 Mbit/s per stream.
 
+## The browser UI
+
+An assignment matrix — endpoints down, partylines across. Click a cell to give that
+endpoint a key on that partyline; the key lands in the next free slot. Each cell carries
+its own **talk** button and a meter showing what that key is actually hearing, so
+mix-minus is visible rather than theoretical: key someone up and every other meter on the
+bus rises while their own stays dark.
+
+Direct lines get their own section, since a point-to-point pair is not a row-and-column
+thing. Creating one makes **both** halves — a direct key with no key back carries
+silence, and a UI that can produce one can produce a dead button.
+
+Validation problems appear live at the top, errors and warnings distinguished. Errors
+reject an edit; warnings do not, because an empty partyline or a half-patched direct
+line is a normal thing to be in the middle of.
+
+## Run it
+
+```bash
+cargo run -p squawk-server -- --config squawk.example.toml
+```
+
+Then open <http://localhost:8477>. Every microphone is a synthesised tone — see the
+note at the foot of the page.
+
 ## Layout
 
 ```
 crates/squawk-core      Data model, TOML config, validation
 crates/squawk-engine    Mix-minus engine and per-stream limiter
+crates/squawk-server    Engine host, HTTP/WebSocket API, browser UI
 crates/diag             Vendored fleet diagnostics
-squawk.example.toml     A worked three-partyline system
+squawk.example.toml     A worked four-partyline theatre system
 docs/ARCHITECTURE.md    Signal path, clock domains, transport split
 ```
 
-## Try it
+## Test it
 
 ```bash
 cargo test --workspace

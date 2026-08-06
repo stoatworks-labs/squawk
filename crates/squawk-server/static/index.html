@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>squawk — partyline intercom</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161a;
+    --panel: #1c1f26;
+    --border: #2a2d33;
+    --text: #e6e6e6;
+    --dim: #b7bfca;
+    --faint: #6b7280;
+    --accent: #9fb4ff;
+    --live: #2f6f4f;
+    --live-bright: #4ade80;
+    --warn: #d9a441;
+    --err: #ff9b9b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  h1 {
+    font-size: 1.1rem; font-weight: 600; color: var(--accent);
+    margin: 0 0 0.35rem; display: flex; align-items: baseline; gap: 0.75rem;
+  }
+  h2 {
+    font-size: 0.85rem; font-weight: 600; color: var(--dim); margin: 0 0 0.6rem;
+    text-transform: uppercase; letter-spacing: 0.03em;
+  }
+  #sub { color: var(--faint); font-size: 0.8rem; margin-bottom: 1.5rem; }
+  #sub b { color: var(--dim); font-weight: 500; }
+  #conn {
+    margin-left: auto; font-size: 0.72rem; font-weight: 400;
+    color: var(--faint); display: flex; align-items: center; gap: 0.4rem;
+  }
+  #conn::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--faint);
+  }
+  #conn.up::before { background: var(--live-bright); }
+
+  section { margin-bottom: 2.25rem; }
+
+  /* ---- problems ---- */
+  #problems:empty { display: none; }
+  .problem {
+    display: flex; gap: 0.6rem; align-items: baseline;
+    padding: 0.45rem 0.7rem; border-radius: 4px; margin-bottom: 0.35rem;
+    font-size: 0.82rem; border: 1px solid transparent;
+  }
+  .problem .tag {
+    font-size: 0.65rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.04em; flex-shrink: 0;
+  }
+  .problem.error { background: #2a1a1c; border-color: #4a2020; color: var(--err); }
+  .problem.warning { background: #2a2418; border-color: #4a3d20; color: var(--warn); }
+
+  /* ---- matrix ---- */
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid var(--border); padding: 0; }
+  th {
+    background: var(--panel); font-weight: 500; font-size: 0.85rem;
+    padding: 0.45rem 0.6rem; white-space: nowrap; vertical-align: bottom;
+  }
+  th.corner { background: transparent; border: none; }
+  th.pl { min-width: 132px; }
+  th.pl .name { display: flex; align-items: center; gap: 0.4rem; justify-content: space-between; }
+  th.pl .swatch { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+  th.ep {
+    text-align: right; min-width: 190px; font-weight: 400;
+    padding: 0.4rem 0.6rem;
+  }
+  th.ep .row { display: flex; align-items: center; gap: 0.5rem; }
+  /* Badge pinned left and × pinned right, name right-aligned against it, so the
+     column reads as a column instead of drifting with each name's length. */
+  th.ep .nm { font-size: 0.88rem; flex: 1; text-align: right; }
+  .badge {
+    font-size: 0.6rem; font-weight: 600; color: #8a8f98; background: #22262e;
+    border-radius: 3px; padding: 0.1rem 0.32rem; text-transform: uppercase;
+    letter-spacing: 0.03em; white-space: nowrap;
+  }
+  .badge.opus { color: #c9a2e8; background: #2a2233; }
+  .x {
+    border: none; background: transparent; color: #5a6068; cursor: pointer;
+    font-size: 0.9rem; line-height: 1; padding: 0.1rem 0.25rem; border-radius: 3px;
+  }
+  .x:hover { background: #4a2020; color: var(--err); }
+
+  td.cell { height: 62px; text-align: center; vertical-align: middle; }
+  td.cell.empty button.add {
+    width: 100%; height: 100%; border: none; background: transparent;
+    color: #3a3f47; cursor: pointer; font-size: 1.2rem;
+  }
+  td.cell.empty button.add:hover { background: #22262e; color: var(--accent); }
+  td.cell.on { background: #191d22; }
+
+  .key { display: flex; flex-direction: column; gap: 3px; padding: 5px 6px; }
+  .key .top { display: flex; align-items: center; gap: 4px; }
+  .talk {
+    flex: 1; border: 1px solid #333842; border-radius: 3px;
+    background: #22262e; color: var(--dim); cursor: pointer;
+    font: inherit; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.05em;
+    padding: 0.22rem 0; text-transform: uppercase;
+  }
+  .talk:hover { border-color: var(--accent); color: var(--text); }
+  .talk.live { background: var(--live); border-color: #3d8a63; color: #d4ffe6; }
+  .talk.listen-only { opacity: 0.35; cursor: not-allowed; }
+  .talk.listen-only:hover { border-color: #333842; color: var(--dim); }
+  .slot { font-size: 0.6rem; color: #5a6068; font-variant-numeric: tabular-nums; }
+
+  /* ---- meters ---- */
+  .meter {
+    height: 5px; background: #101317; border-radius: 2px; overflow: hidden;
+    position: relative;
+  }
+  .meter i {
+    display: block; height: 100%; width: 0%;
+    background: var(--live-bright);
+    transition: width 60ms linear;
+  }
+  .meter i.hot { background: var(--warn); }
+  .meter i.clip { background: var(--err); }
+  .meter.wide { height: 6px; min-width: 90px; }
+  .meter-label { font-size: 0.62rem; color: #5a6068; font-variant-numeric: tabular-nums; }
+
+  /* ---- direct lines ---- */
+  .direct {
+    display: flex; align-items: center; gap: 0.75rem;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 5px;
+    padding: 0.55rem 0.75rem; margin-bottom: 0.4rem; max-width: 44rem;
+  }
+  .direct .who { font-size: 0.85rem; min-width: 8rem; }
+  .direct .arrow { color: var(--faint); font-size: 0.8rem; }
+  .direct .leg { display: flex; flex-direction: column; gap: 3px; min-width: 8rem; }
+  .direct .leg .cap { font-size: 0.62rem; color: #5a6068; }
+
+  /* ---- manage ---- */
+  #manage { display: flex; gap: 2.5rem; flex-wrap: wrap; }
+  .col { min-width: 21rem; }
+  form.add {
+    display: flex; gap: 0.4rem; margin-bottom: 0.6rem; flex-wrap: wrap;
+  }
+  input, select {
+    background: #101317; border: 1px solid var(--border); border-radius: 4px;
+    color: var(--text); font: inherit; font-size: 0.82rem; padding: 0.32rem 0.5rem;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  input.id { width: 7rem; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.76rem; }
+  input.nm { width: 9rem; }
+  button.go {
+    background: #1c2333; border: 1px solid #2c3550; border-radius: 4px;
+    color: var(--accent); font: inherit; font-size: 0.8rem;
+    padding: 0.32rem 0.7rem; cursor: pointer;
+  }
+  button.go:hover { background: #242d42; }
+  .list-row {
+    display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0;
+    border-bottom: 1px solid #21242a; font-size: 0.84rem;
+  }
+  .list-row .grow { flex: 1; }
+  .list-row code { color: var(--faint); font-size: 0.74rem; }
+
+  #err {
+    color: var(--err); font-size: 0.8rem; min-height: 1.2em; margin-top: 0.75rem;
+  }
+  #disclaimer {
+    margin-top: 3rem; font-size: 0.74rem; color: #565b64; max-width: 40rem;
+    line-height: 1.6; border-top: 1px solid #21242a; padding-top: 1rem;
+  }
+  .empty-note { color: var(--faint); font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<h1>squawk <span id="conn">connecting</span></h1>
+<div id="sub"></div>
+
+<section id="problems"></section>
+
+<section>
+  <h2>Assignment matrix</h2>
+  <div id="matrix"></div>
+</section>
+
+<section id="direct-section">
+  <h2>Direct lines</h2>
+  <div id="directs"></div>
+</section>
+
+<section>
+  <h2>Manage</h2>
+  <div id="manage">
+    <div class="col">
+      <form class="add" id="add-pl">
+        <input class="id" name="id" placeholder="id" required pattern="[a-z0-9\-]+">
+        <input class="nm" name="name" placeholder="Partyline name" required>
+        <button class="go" type="submit">Add partyline</button>
+      </form>
+      <div id="pl-list"></div>
+    </div>
+    <div class="col">
+      <form class="add" id="add-ep">
+        <input class="id" name="id" placeholder="id" required pattern="[a-z0-9\-]+">
+        <input class="nm" name="name" placeholder="Endpoint name" required>
+        <select name="kind">
+          <option value="desktop">Desktop</option>
+          <option value="hardware">Hardware</option>
+          <option value="mobile">Mobile</option>
+          <option value="browser">Browser</option>
+          <option value="aes67-external">AES67 device</option>
+        </select>
+        <button class="go" type="submit">Add endpoint</button>
+      </form>
+      <div id="ep-list"></div>
+    </div>
+  </div>
+  <div id="err"></div>
+</section>
+
+<div id="disclaimer">
+  <b>Simulated audio.</b> There is no transport yet. Every endpoint's microphone is a
+  synthesised tone and the engine is paced off the system clock, not a PTP-derived
+  media clock. The mixing, the mix-minus and the routing are real; the audio arriving
+  and leaving is not.
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+let state = null;
+const meters = { inputs: new Map(), buses: new Map(), outputs: new Map() };
+const talkBtns = new Map();
+
+/* -60 dBFS at the floor, 0 dBFS full — the useful range for a comms meter. */
+function dbToPct(db) {
+  return Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+}
+
+function setMeter(el, db) {
+  if (!el) return;
+  el.style.width = dbToPct(db) + "%";
+  // A comms mic sitting around -10 dBFS is healthy, not hot — amber starts at -6.
+  el.className = db > -1 ? "clip" : db > -6 ? "hot" : "";
+}
+
+function meterHtml() {
+  return '<div class="meter"><i></i></div>';
+}
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "content-type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { msg = (await res.json()).error || msg; } catch (_) {}
+    throw new Error(msg);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+async function act(fn) {
+  $("#err").textContent = "";
+  try {
+    const next = await fn();
+    if (next) { state = next; render(); }
+  } catch (e) {
+    $("#err").textContent = e.message;
+  }
+}
+
+/* ---------------------------------------------------------------- rendering */
+
+function render() {
+  if (!state) return;
+  const cfg = state.config;
+
+  const pps = state.packets_per_second.toLocaleString();
+  $("#sub").innerHTML =
+    `<b>${esc(cfg.system.name)}</b> · ${cfg.endpoints.length} endpoints · ` +
+    `${cfg.partylines.length} partylines · ${state.total_streams} streams ` +
+    `(${state.aes67_streams} AES67, ${state.total_streams - state.aes67_streams} folded to Opus) · ` +
+    `${pps} packets/sec outbound`;
+
+  $("#problems").innerHTML = state.problems.map((p) =>
+    `<div class="problem ${p.severity}"><span class="tag">${p.severity}</span>` +
+    `<span>${esc(p.message)}</span></div>`).join("");
+
+  renderMatrix(cfg);
+  renderDirects(cfg);
+  renderLists(cfg);
+}
+
+function renderMatrix(cfg) {
+  meters.inputs.clear();
+  meters.buses.clear();
+  meters.outputs.clear();
+  talkBtns.clear();
+
+  if (!cfg.endpoints.length || !cfg.partylines.length) {
+    $("#matrix").innerHTML =
+      '<p class="empty-note">Add at least one partyline and one endpoint to patch them together.</p>';
+    return;
+  }
+
+  let html = "<table><thead><tr><th class='corner'></th>";
+  for (const p of cfg.partylines) {
+    const sw = p.colour ? `<span class="swatch" style="background:${esc(p.colour)}"></span>` : "";
+    html += `<th class="pl"><div class="name"><span>${sw}${esc(p.name)}</span>` +
+            `<button class="x" data-del-pl="${esc(p.id)}" title="Remove partyline">×</button></div>` +
+            `<div class="meter wide" data-bus="${esc(p.id)}"><i></i></div></th>`;
+  }
+  html += "</tr></thead><tbody>";
+
+  for (const e of cfg.endpoints) {
+    const opus = e.kind === "mobile" || e.kind === "browser";
+    html += `<tr><th class="ep"><div class="row">` +
+            `<span class="badge${opus ? " opus" : ""}">${opus ? "opus" : "aes67"}</span>` +
+            `<span class="nm">${esc(e.name)}</span>` +
+            `<button class="x" data-del-ep="${esc(e.id)}" title="Remove endpoint">×</button></div>` +
+            `<div class="meter wide" data-input="${esc(e.id)}"><i></i></div></th>`;
+
+    for (const p of cfg.partylines) {
+      const key = e.keys.find((k) => k.target.partyline === p.id);
+      if (!key) {
+        html += `<td class="cell empty"><button class="add" data-assign="${esc(e.id)}" ` +
+                `data-pl="${esc(p.id)}" title="Assign">+</button></td>`;
+      } else {
+        const lo = key.talk_mode === "listen-only";
+        html += `<td class="cell on"><div class="key"><div class="top">` +
+                `<button class="talk${lo ? " listen-only" : ""}" data-talk="${esc(e.id)}" ` +
+                `data-slot="${key.slot}"${lo ? " disabled" : ""}>${lo ? "listen" : "talk"}</button>` +
+                `<button class="x" data-unassign="${esc(e.id)}" data-slot="${key.slot}" ` +
+                `title="Remove key">×</button></div>` +
+                `<div class="meter" data-out="${esc(e.id)}:${key.slot}"><i></i></div>` +
+                `<span class="slot">K${key.slot}</span></div></td>`;
+      }
+    }
+    html += "</tr>";
+  }
+  html += "</tbody></table>";
+  $("#matrix").innerHTML = html;
+
+  for (const el of document.querySelectorAll("[data-input]"))
+    meters.inputs.set(el.dataset.input, el.firstElementChild);
+  for (const el of document.querySelectorAll("[data-bus]"))
+    meters.buses.set(el.dataset.bus, el.firstElementChild);
+  for (const el of document.querySelectorAll("[data-out]"))
+    meters.outputs.set(el.dataset.out, el.firstElementChild);
+  for (const el of document.querySelectorAll("[data-talk]"))
+    talkBtns.set(`${el.dataset.talk}:${el.dataset.slot}`, el);
+}
+
+function renderDirects(cfg) {
+  const pairs = [];
+  const seen = new Set();
+  for (const e of cfg.endpoints) {
+    for (const k of e.keys) {
+      const other = k.target.direct;
+      if (!other) continue;
+      const id = [e.id, other].sort().join("|");
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const far = cfg.endpoints.find((x) => x.id === other);
+      const back = far && far.keys.find((k2) => k2.target.direct === e.id);
+      pairs.push({ a: e, aSlot: k.slot, b: far, bSlot: back ? back.slot : null });
+    }
+  }
+
+  if (!pairs.length) {
+    $("#directs").innerHTML =
+      '<p class="empty-note">No direct lines. Create one from an endpoint below.</p>';
+    return;
+  }
+
+  $("#directs").innerHTML = pairs.map((p) => {
+    const leg = (ep, slot, label) => slot === null
+      ? `<div class="leg"><span class="cap">${esc(label)}</span>` +
+        `<span class="cap" style="color:var(--warn)">no key back — silent</span></div>`
+      : `<div class="leg"><span class="cap">${esc(label)}</span>` +
+        `<button class="talk" data-talk="${esc(ep.id)}" data-slot="${slot}">talk</button>` +
+        `<div class="meter" data-out="${esc(ep.id)}:${slot}"><i></i></div></div>`;
+    return `<div class="direct">` +
+      `<span class="who">${esc(p.a.name)} <span class="arrow">↔</span> ` +
+      `${esc(p.b ? p.b.name : "?")}</span>` +
+      leg(p.a, p.aSlot, `${p.a.name} hears`) +
+      (p.b ? leg(p.b, p.bSlot, `${p.b.name} hears`) : "") +
+      `<button class="x" data-unassign="${esc(p.a.id)}" data-slot="${p.aSlot}">×</button></div>`;
+  }).join("");
+
+  for (const el of document.querySelectorAll("#directs [data-out]"))
+    meters.outputs.set(el.dataset.out, el.firstElementChild);
+  for (const el of document.querySelectorAll("#directs [data-talk]"))
+    talkBtns.set(`${el.dataset.talk}:${el.dataset.slot}`, el);
+}
+
+function renderLists(cfg) {
+  $("#pl-list").innerHTML = cfg.partylines.map((p) =>
+    `<div class="list-row"><span class="grow">${esc(p.name)} <code>${esc(p.id)}</code></span>` +
+    `<button class="x" data-del-pl="${esc(p.id)}">×</button></div>`).join("") ||
+    '<p class="empty-note">No partylines yet.</p>';
+
+  const opts = ["desktop", "hardware", "mobile", "browser", "aes67-external"];
+  $("#ep-list").innerHTML = cfg.endpoints.map((e) => {
+    const others = cfg.endpoints.filter((o) =>
+      o.id !== e.id && !e.keys.some((k) => k.target.direct === o.id));
+    const dial = others.length
+      ? `<select data-dial="${esc(e.id)}"><option value="">direct to…</option>` +
+        others.map((o) => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("") +
+        `</select>`
+      : "";
+    return `<div class="list-row"><span class="grow">${esc(e.name)} <code>${esc(e.id)}</code></span>` +
+      `<select data-kind="${esc(e.id)}">` +
+      opts.map((k) => `<option value="${k}"${k === e.kind ? " selected" : ""}>${k}</option>`).join("") +
+      `</select>${dial}<button class="x" data-del-ep="${esc(e.id)}">×</button></div>`;
+  }).join("") || '<p class="empty-note">No endpoints yet.</p>';
+}
+
+/* ------------------------------------------------------------- interactions */
+
+document.addEventListener("click", (ev) => {
+  const t = ev.target.closest("[data-assign],[data-unassign],[data-del-pl],[data-del-ep],[data-talk]");
+  if (!t) return;
+
+  if (t.dataset.assign !== undefined) {
+    act(() => api("POST", "/api/assign", {
+      endpoint: t.dataset.assign,
+      target: { partyline: t.dataset.pl },
+    }));
+  } else if (t.dataset.unassign !== undefined) {
+    act(() => api("POST", "/api/unassign", {
+      endpoint: t.dataset.unassign,
+      slot: Number(t.dataset.slot),
+    }));
+  } else if (t.dataset.delPl !== undefined) {
+    act(() => api("DELETE", `/api/partylines/${encodeURIComponent(t.dataset.delPl)}`));
+  } else if (t.dataset.delEp !== undefined) {
+    act(() => api("DELETE", `/api/endpoints/${encodeURIComponent(t.dataset.delEp)}`));
+  } else if (t.dataset.talk !== undefined && !t.disabled) {
+    // Optimistic: the button lights immediately and the next snapshot confirms it.
+    const on = !t.classList.contains("live");
+    t.classList.toggle("live", on);
+    act(() => api("POST", "/api/talk", {
+      endpoint: t.dataset.talk, slot: Number(t.dataset.slot), on,
+    }));
+  }
+});
+
+document.addEventListener("change", (ev) => {
+  const t = ev.target;
+  if (t.dataset.kind !== undefined) {
+    act(() => api("POST", "/api/endpoint-settings", {
+      endpoint: t.dataset.kind, kind: t.value,
+    }));
+  } else if (t.dataset.dial !== undefined && t.value) {
+    act(() => api("POST", "/api/assign", {
+      endpoint: t.dataset.dial, target: { direct: t.value },
+    }));
+  }
+});
+
+/* Auto-slug the id from the name so nobody has to think about it twice. */
+for (const form of [$("#add-pl"), $("#add-ep")]) {
+  form.name.addEventListener("input", () => {
+    if (form.id_touched) return;
+    form.querySelector("input.id").value = form.name.value
+      .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  });
+  form.querySelector("input.id").addEventListener("input", () => { form.id_touched = true; });
+}
+
+$("#add-pl").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const f = ev.target;
+  act(async () => {
+    const r = await api("POST", "/api/partylines", {
+      id: f.id.value, name: f.name.value,
+    });
+    f.reset(); f.id_touched = false;
+    return r;
+  });
+});
+
+$("#add-ep").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const f = ev.target;
+  act(async () => {
+    const r = await api("POST", "/api/endpoints", {
+      id: f.id.value, name: f.name.value, kind: f.kind.value,
+    });
+    f.reset(); f.id_touched = false;
+    return r;
+  });
+});
+
+/* -------------------------------------------------------------- live meters */
+
+function applySnapshot(s) {
+  for (const l of s.inputs) setMeter(meters.inputs.get(l.id), l.db);
+  for (const l of s.buses) setMeter(meters.buses.get(l.id), l.db);
+  for (const l of s.outputs) setMeter(meters.outputs.get(l.id), l.db);
+
+  const live = new Set(s.talking);
+  for (const [id, btn] of talkBtns) btn.classList.toggle("live", live.has(id));
+
+  if (state && s.generation !== state._generation) {
+    state._generation = s.generation;
+  }
+}
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => $("#conn").classList.add("up") || ($("#conn").textContent = "live");
+  ws.onclose = () => {
+    $("#conn").classList.remove("up");
+    $("#conn").textContent = "reconnecting";
+    setTimeout(connect, 1000);
+  };
+  ws.onmessage = (ev) => applySnapshot(JSON.parse(ev.data));
+}
+
+(async function boot() {
+  state = await api("GET", "/api/state");
+  render();
+  connect();
+})();
+</script>
+</body>
+</html>

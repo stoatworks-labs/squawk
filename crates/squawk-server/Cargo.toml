@@ -1,0 +1,27 @@
+[package]
+name = "squawk-server"
+description = "squawk intercom server: hosts the mix engine and serves the browser UI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "squawk-server"
+path = "src/main.rs"
+
+[dependencies]
+squawk-core = { workspace = true }
+squawk-engine = { workspace = true }
+diag = { path = "../diag" }
+
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

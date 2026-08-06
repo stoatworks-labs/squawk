@@ -1,10 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::Serialize;
+
 use crate::model::{Config, EndpointId, KeyTarget, PartylineId};
 use crate::MAX_KEYS;
 
 /// How badly a [`Problem`] matters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Severity {
     /// The config is coherent but probably not what was meant.
     Warning,
@@ -13,7 +16,15 @@ pub enum Severity {
 }
 
 /// A specific thing wrong with a config.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Carries the ids involved rather than only a message, so the UI can highlight the
+/// offending row instead of making the operator match a sentence against a table.
+/// Adjacently tagged rather than internally tagged: several variants are newtypes over
+/// an id, which serialises as a string, and an internally-tagged enum can only wrap
+/// values that serialise as a map. That failure appears at *runtime*, as a 500 from
+/// every endpoint that returns a problem list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case", tag = "kind", content = "detail")]
 pub enum ProblemKind {
     DuplicateEndpointId(EndpointId),
     DuplicatePartylineId(PartylineId),
@@ -34,9 +45,10 @@ pub enum ProblemKind {
 }
 
 /// A validation finding, ready to render in the UI next to the offending row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Problem {
     pub severity: Severity,
+    #[serde(flatten)]
     pub kind: ProblemKind,
     /// Human-readable explanation, including *why* it matters where that is not obvious.
     pub message: String,

@@ -4,6 +4,7 @@ members = [
     "crates/diag",
     "crates/squawk-core",
     "crates/squawk-engine",
+    "crates/squawk-server",
 ]
 
 [workspace.package]
