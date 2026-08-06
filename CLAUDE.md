@@ -8,9 +8,10 @@ partyline mix-minus or a direct path. Rust workspace, MIT, public.
 fail silently.
 
 ## Status
-`squawk-core` + `squawk-engine` + `squawk-server` (host, HTTP/WS, browser UI) built and
-tested. **Every mic is a synthesised tone** — no transport, no audio I/O, no PTP, no
-hardware. Don't describe it as working intercom.
+`squawk-core` + `squawk-engine` + `squawk-server` + `squawk-rtp` built and tested
+(the last over real UDP loopback). **But the transport is not wired into the server
+yet** — every mic is still a synthesised tone, and there is no SAP, no PTP, no audio
+I/O, no hardware. Don't describe it as working intercom.
 
 ## Commands
 ```bash
@@ -23,6 +24,7 @@ cargo test --release -p squawk-engine --test scale -- --nocapture   # timing
 ## Layout
 - `crates/squawk-core` — data model, TOML config, validation
 - `crates/squawk-engine` — mix-minus engine, per-stream limiter
+- `crates/squawk-rtp` — RTP/L24, AES67 SDP, jitter buffer, UDP sockets
 - `crates/squawk-server` — engine host thread, REST + WebSocket, `static/index.html`
 - `crates/diag` — vendored fleet diagnostics
 - `squawk.example.toml` — worked system, parsed by a test so it can't rot
@@ -38,6 +40,12 @@ cargo test --release -p squawk-engine --test scale -- --nocapture   # timing
 - **`ProblemKind` stays adjacently tagged** (`tag` + `content`). Internal tagging
   compiles and then 500s — but only when there is a problem to report, so a clean
   config hides it.
+- **Jitter buffer indexes on RTP timestamp**, and tracks its ring slot alongside the
+  playout point. Deriving the slot from the timestamp breaks at the 2^32 wrap.
+- **Multicast groups allocate sequentially** from one base — IPv4 multicast only puts
+  the low 23 bits into the MAC, so a scattered scheme makes two streams share one.
+- **Jitter capacity ≠ latency.** Depth is the delay; capacity is burst headroom for a
+  descheduled receive thread.
 
 ## Committed by physics
 Phones/browsers get Opus/WebRTC, never AES67 (no PTP, wifi multicast is unreliable).

@@ -1,0 +1,19 @@
+[package]
+name = "squawk-rtp"
+description = "AES67 RTP packetisation, SDP/SAP and jitter buffering for the squawk intercom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+squawk-core = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# std::net cannot set IP_MULTICAST_IF (choosing which NIC a stream leaves by),
+# SO_REUSEADDR (needed because every stream shares port 5004 and is distinguished by
+# multicast group, so many receivers bind the same port), or SO_RCVBUF (needed at
+# 1000 packets/sec/stream). All three are load-bearing here, not conveniences.
+# "all" is needed for set_reuse_port, which is what BSD/macOS actually require for
+# several receivers to share port 5004; SO_REUSEADDR alone is enough only on Linux.
+socket2 = { version = "0.5", features = ["all"] }

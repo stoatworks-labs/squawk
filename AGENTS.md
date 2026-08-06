@@ -12,8 +12,8 @@ An open **partyline intercom** — Green-Go / Bolero / Clear-Com shaped. A serve
 endpoints talk and listen. Each endpoint has up to 10 keys; each key is its own stream
 carrying either a partyline (mix-minus) or a direct point-to-point path.
 
-Rust workspace: `squawk-core` (model), `squawk-engine` (mixer), `squawk-server` (host +
-HTTP/WS + browser UI).
+Rust workspace: `squawk-core` (model), `squawk-engine` (mixer), `squawk-rtp` (AES67
+packets, SDP, jitter buffer, sockets), `squawk-server` (host + HTTP/WS + browser UI).
 
 ## 2. What is actually verified
 
@@ -21,10 +21,13 @@ Be precise about this in anything you write for the user. The engine's behaviour
 covered by tests that assert *sample-exact* mix-minus, and the server has been driven
 end to end in a browser against the real engine. Beyond that:
 
-- **Every microphone is a synthesised tone.** `host.rs` runs a `SimulatedSource`.
-- The engine is paced off `Instant`, not a media clock.
-- No RTP packet has ever been sent or received.
-- No PTP clock has been locked.
+- **`squawk-rtp` is not wired into `squawk-server`.** They are two separate working
+  things that have never met. `host.rs` still runs a `SimulatedSource`.
+- **Every microphone is a synthesised tone**, and the engine is paced off `Instant`,
+  not a media clock.
+- RTP has been sent and received over UDP **loopback only**, in tests. Never over a real
+  network, never to or from another vendor's device.
+- No PTP clock has been locked, and there is no SAP.
 - No audio device has been opened.
 - No hardware exists.
 
@@ -102,6 +105,42 @@ serialise as a map. Switching to `tag` alone compiles fine and then returns 500 
 every endpoint that reports a problem — and **only when there is a problem to report**,
 so a clean config hides it completely. That is exactly how it got shipped and caught
 once already.
+
+### The jitter buffer indexes on timestamp, and tracks its own ring slot
+
+`playout_slot` advances alongside `playout`. The obvious alternative — deriving the slot
+as `(timestamp / block) % capacity` — looks equivalent and is not: a sender's timestamps
+sit on no absolute grid, and that division jumps discontinuously at the 2^32 rollover,
+scattering a few milliseconds of audio into the wrong slots once every ~24.8 hours.
+Test: `the_timestamp_wrap_at_2_to_the_32_is_a_non_event`.
+
+Related ordering rule inside `push`: the **range check must come before the alignment
+check**. A restarted sender picks a fresh random timestamp that will not sit on our
+block grid, so checking alignment first reports every restart as a permanent
+misalignment and the stream never recovers.
+
+### Jitter capacity is not jitter latency
+
+`target_depth` sets the delay. Capacity is headroom for the case where the receive
+thread is descheduled for tens of milliseconds and `poll` then hands over the whole
+backlog at once. Sizing capacity to the depth means resyncing — and discarding audio
+that had already arrived safely — every time the OS blinks. Test:
+`a_scheduling_stall_does_not_cost_audio_that_already_arrived`.
+
+### Multicast groups must stay sequential from one base
+
+IPv4 multicast copies only the **low 23 bits** of the address into the Ethernet MAC.
+239.69.1.1 and 239.197.1.1 are the same MAC, and an IGMP-snooping switch filters on MAC,
+so a receiver that joined one gets both. Sequential allocation from a single base keeps
+those bits distinct. Any change to `stream_group` has to preserve that. Test:
+`group_allocation_keeps_the_low_23_bits_distinct`.
+
+### `socket2` is not a convenience
+
+std cannot set `IP_MULTICAST_IF` (without it a stream leaves by whatever NIC the routing
+table likes — usually the office LAN — and reports success), `SO_REUSEADDR`/`SO_REUSEPORT`
+(without which the second receiver on port 5004 fails to bind, and every stream shares
+that port by design), or `SO_RCVBUF`. All three are load-bearing.
 
 ### Stream index ordering is load-bearing
 

@@ -23,7 +23,10 @@ levels, mutes and ear placement instantly and locally, with no round trip to the
 | Data model, config, validation (`squawk-core`) | Built and tested |
 | Mix-minus engine (`squawk-engine`) | Built and tested |
 | Server + browser UI (`squawk-server`) | Built and tested, **on simulated audio** |
-| AES67 transport — RTP, SDP/SAP, PTP | Not started |
+| AES67 packets, SDP, jitter buffer, sockets (`squawk-rtp`) | Built and tested over real UDP |
+| Transport wired into the server | Not started |
+| SAP discovery | Not started |
+| PTP clock | Not started |
 | Tray packaging (via `av-launcher`) | Not started |
 | Desktop client station | Not started |
 | Opus/WebRTC leg for phones and browsers | Not started |
@@ -81,6 +84,36 @@ packets per second outbound, which has to be batched per tick (`sendmmsg`) from 
 start — it is not something that can be retrofitted. Bandwidth is the lesser problem at
 roughly 1.6 Mbit/s per stream.
 
+## The transport
+
+`squawk-rtp` does RTP/L24 packetisation, AES67 session descriptions, the receive-side
+jitter buffer, and the sockets. It is tested over real UDP, not against a mock: audio
+goes out of one socket and comes back in through another, sample-identical.
+
+Three things in there are worth knowing about, because each of them fails quietly:
+
+- **The jitter buffer is indexed by RTP timestamp, not by sequence number.** The
+  timestamp *is* the media clock; the sequence number is only a counter. A
+  sequence-indexed ring scatters audio into the wrong slots at the 2^32 timestamp
+  rollover — once every ~24.8 hours at 48 kHz, so reliably mid-show.
+- **Multicast groups are allocated sequentially from one base.** IPv4 multicast copies
+  only the **low 23 bits** of the address into the Ethernet MAC, so 239.69.1.1 and
+  239.197.1.1 become the same MAC and an IGMP-snooping switch delivers both to anyone
+  who joined either. Sequential allocation keeps those bits distinct.
+- **The buffer's capacity is not its latency.** Depth sets the delay; capacity is
+  headroom for the case where the receiving thread is descheduled and `poll` then hands
+  over 40 packets at once. A ring sized to the depth throws away audio it had already
+  received.
+
+Measured on an M-series Mac, one thread, unbatched:
+
+```
+send_to: 292,000 packets/sec   (3.4 us per packet) — about 292 streams at 1 ms
+```
+
+Which lands just under the 320 streams a 32-endpoint system implies. That is the
+measurement that turns per-tick send batching from an optimisation into a requirement.
+
 ## The browser UI
 
 An assignment matrix — endpoints down, partylines across. Click a cell to give that
@@ -111,6 +144,7 @@ note at the foot of the page.
 ```
 crates/squawk-core      Data model, TOML config, validation
 crates/squawk-engine    Mix-minus engine and per-stream limiter
+crates/squawk-rtp       RTP/L24, AES67 SDP, jitter buffer, UDP sockets
 crates/squawk-server    Engine host, HTTP/WebSocket API, browser UI
 crates/diag             Vendored fleet diagnostics
 squawk.example.toml     A worked four-partyline theatre system
