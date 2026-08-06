@@ -1,0 +1,10 @@
+[package]
+name = "squawk-engine"
+description = "Block-based mix-minus engine for the squawk partyline intercom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+squawk-core = { workspace = true }
+thiserror = { workspace = true }

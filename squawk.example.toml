@@ -1,0 +1,174 @@
+# A worked squawk system: a mid-size theatre comms rig.
+#
+# This file is parsed and validated by a test, so it cannot rot away from the code.
+#
+# Note there is no "members" list on a partyline. An endpoint is a member because it
+# has a key pointing at it — that is the only source of truth. See AGENTS.md.
+
+[system]
+name = "Theatre Comms"
+sample_rate = 48000
+# 48 samples = 1 ms = one RTP packet = one engine block. Don't change these apart.
+ptime_samples = 48
+# Fade applied when a talk key is pressed or released. Below ~2 ms it clicks.
+talk_ramp_ms = 5.0
+
+# ---------------------------------------------------------------------------
+# Partylines
+# ---------------------------------------------------------------------------
+
+[[partylines]]
+id = "prod"
+name = "Production"
+colour = "#c8462d"
+
+[[partylines]]
+id = "stage"
+name = "Stage Crew"
+colour = "#2d7fc8"
+
+[[partylines]]
+id = "lx"
+name = "Lighting"
+colour = "#c8a02d"
+
+[[partylines]]
+id = "snd"
+name = "Sound"
+colour = "#3ea05a"
+
+# ---------------------------------------------------------------------------
+# Endpoints
+#
+# kind decides the transport:
+#   desktop / hardware / aes67-external -> per-key AES67 streams
+#   mobile / browser                    -> server-folded Opus over WebRTC
+# ---------------------------------------------------------------------------
+
+[[endpoints]]
+id = "sm"
+name = "Stage Manager"
+kind = "desktop"
+
+[[endpoints.keys]]
+slot = 0
+target = { partyline = "prod" }
+
+[[endpoints.keys]]
+slot = 1
+target = { partyline = "stage" }
+
+[[endpoints.keys]]
+slot = 2
+target = { partyline = "lx" }
+# Listen at a lower level than the lines actually being worked.
+listen_level_db = -6.0
+
+[[endpoints.keys]]
+slot = 3
+target = { partyline = "snd" }
+listen_level_db = -6.0
+
+# A private line to the producer. The other half of this pair is on "producer" below —
+# a direct key with no key back is a warning, and carries silence.
+[[endpoints.keys]]
+slot = 4
+target = { direct = "producer" }
+talk_mode = "momentary"
+
+[[endpoints]]
+id = "producer"
+name = "Producer"
+kind = "desktop"
+
+[[endpoints.keys]]
+slot = 0
+target = { partyline = "prod" }
+
+[[endpoints.keys]]
+slot = 1
+target = { direct = "sm" }
+talk_mode = "momentary"
+
+[[endpoints]]
+id = "stage-left"
+name = "Stage Left"
+kind = "hardware"
+input_gain_db = 6.0
+
+[[endpoints.keys]]
+slot = 0
+target = { partyline = "stage" }
+
+[[endpoints.keys]]
+slot = 1
+target = { partyline = "prod" }
+# Hears production but cannot key onto it.
+talk_mode = "listen-only"
+
+[[endpoints]]
+id = "stage-right"
+name = "Stage Right"
+kind = "hardware"
+input_gain_db = 6.0
+
+[[endpoints.keys]]
+slot = 0
+target = { partyline = "stage" }
+
+[[endpoints.keys]]
+slot = 1
+target = { partyline = "prod" }
+talk_mode = "listen-only"
+
+[[endpoints]]
+id = "lx-op"
+name = "LX Operator"
+kind = "desktop"
+
+[[endpoints.keys]]
+slot = 0
+target = { partyline = "lx" }
+
+[[endpoints.keys]]
+slot = 1
+target = { partyline = "prod" }
+
+[[endpoints]]
+id = "followspot-1"
+name = "Followspot 1"
+kind = "hardware"
+
+[[endpoints.keys]]
+slot = 0
+target = { partyline = "lx" }
+talk_mode = "momentary"
+
+[[endpoints]]
+id = "sound-op"
+name = "Sound Operator"
+kind = "desktop"
+
+[[endpoints.keys]]
+slot = 0
+target = { partyline = "snd" }
+
+[[endpoints.keys]]
+slot = 1
+target = { partyline = "prod" }
+
+# A roving phone. Cannot take AES67 — no PTP, and wifi multicast is unreliable — so the
+# server folds its keys into one Opus stream. The key model is otherwise identical.
+[[endpoints]]
+id = "roving"
+name = "Roving (phone)"
+kind = "mobile"
+
+[[endpoints.keys]]
+slot = 0
+target = { partyline = "stage" }
+
+[[endpoints.keys]]
+slot = 1
+target = { partyline = "prod" }
+listen_level_db = -3.0

@@ -1,0 +1,11 @@
+[package]
+name = "squawk-core"
+description = "Data model, configuration and validation for the squawk partyline intercom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
