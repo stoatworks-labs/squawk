@@ -8,10 +8,11 @@ partyline mix-minus or a direct path. Rust workspace, MIT, public.
 fail silently.
 
 ## Status
-All four crates built and tested. Audio goes in and out over **real AES67 multicast**
-and mix-minus holds sample-exact through the round trip — but only over `lo0`, against
-itself. No PTP (media clock is the server's own), no SAP, no client, no audio device,
-no hardware. Don't describe it as working intercom.
+Five crates built and tested. Audio goes in and out over **real AES67 multicast** and
+mix-minus holds sample-exact through the round trip — but only over `lo0`, against
+itself. `squawk-ptp` locks to a *synthetic* grandmaster (~10 us residual) but **is not
+wired into the media clock**, which is still the server's own free-running one. No SAP,
+no client, no audio device, no hardware. Don't describe it as working intercom.
 
 ## Commands
 ```bash
@@ -28,6 +29,7 @@ cargo test --release -p squawk-engine --test scale -- --nocapture   # timing
 ## Layout
 - `crates/squawk-core` — data model, TOML config, validation
 - `crates/squawk-engine` — mix-minus engine, per-stream limiter
+- `crates/squawk-ptp` — PTPv2 messages, BMCA, servo, media clock
 - `crates/squawk-rtp` — RTP/L24, AES67 SDP, jitter buffer, UDP sockets
 - `crates/squawk-server` — engine host thread, REST + WebSocket, `static/index.html`
 - `crates/diag` — vendored fleet diagnostics
@@ -54,6 +56,11 @@ cargo test --release -p squawk-engine --test scale -- --nocapture   # timing
   index — that shifts whenever a key is added anywhere before it.
 - **Blocks per wake stays 1 on the network.** Bursting costs every receiver jitter
   buffer depth.
+- **PTP measures on the corrected clock** (`ptp_now`, not `local_now`) or the servo's
+  input never responds to its output and it never converges.
+- **Lock has hysteresis** — one outlier must not drop it.
+- **PTP binds the wildcard, RTP binds the group** — opposite, both right. On macOS a
+  privileged-port bind is denied on a specific address but allowed on the wildcard.
 
 ## Committed by physics
 Phones/browsers get Opus/WebRTC, never AES67 (no PTP, wifi multicast is unreliable).

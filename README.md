@@ -24,8 +24,9 @@ levels, mutes and ear placement instantly and locally, with no round trip to the
 | Server + browser UI (`squawk-server`) | Built and tested |
 | AES67 packets, SDP, jitter buffer, sockets (`squawk-rtp`) | Built and tested over real UDP |
 | Transport wired into the server | **Working** — audio in and out over real multicast |
+| PTP slave (`squawk-ptp`) | Built; locks to a synthetic grandmaster |
+| PTP wired into the media clock | Not started |
 | SAP discovery | Not started |
-| PTP clock | Not started |
 | Tray packaging (via `av-launcher`) | Not started |
 | Desktop client station | Not started |
 | Opus/WebRTC leg for phones and browsers | Not started |
@@ -123,6 +124,40 @@ identity means adding a key moves nothing else.
 
 Reordering or deleting *endpoints* still shifts things. The real fix is to persist an
 allocation per endpoint id, and it is worth doing before anyone deploys this.
+
+## The clock
+
+AES67 devices agree on time by all slaving to one grandmaster, and their RTP timestamps
+*are* that time counted in samples. Two senders on the same grandmaster produce
+identical timestamps for the same instant, which is what lets a receiver line up streams
+from different manufacturers without negotiating anything.
+
+`squawk-ptp` implements the slave side of IEEE 1588-2008: message coding, the Best
+Master Clock Algorithm, and a PI servo. It locks to a synthetic grandmaster over real
+sockets in about 0.6 s, settling around **10 µs** of residual offset.
+
+**It is not yet driving the media clock.** RTP timestamps still come from the server's
+own free-running clock.
+
+### Software timestamping, and what it costs
+
+Proper PTP timestamps in the NIC, as the packet crosses the wire. This timestamps in
+userspace when the kernel hands the packet over, which includes interrupt latency and
+scheduling — tens of microseconds of noise against tens of nanoseconds.
+
+At 48 kHz one sample is 20.8 µs, so this lands at roughly **±1 sample**. Fine for speech
+on an intercom. Not fine for phase-coherent summing. macOS exposes no hardware
+timestamping at all; on Linux, `SO_TIMESTAMPING` with a capable NIC is the upgrade path
+and is not implemented.
+
+### To see what is on your network
+
+```bash
+cargo run --release -p squawk-ptp --example ptpmon -- --iface 192.168.1.90 --domain 0
+```
+
+"No grandmaster" and "listening on the wrong domain" look identical from the outside, so
+it counts messages from other domains and tells you when to try `--domain 127`.
 
 ## The browser UI
 

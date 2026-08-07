@@ -4,6 +4,7 @@ members = [
     "crates/diag",
     "crates/squawk-core",
     "crates/squawk-engine",
+    "crates/squawk-ptp",
     "crates/squawk-rtp",
     "crates/squawk-server",
 ]
@@ -23,4 +24,5 @@ anyhow = "1"
 
 squawk-core = { path = "crates/squawk-core" }
 squawk-engine = { path = "crates/squawk-engine" }
+squawk-ptp = { path = "crates/squawk-ptp" }
 squawk-rtp = { path = "crates/squawk-rtp" }

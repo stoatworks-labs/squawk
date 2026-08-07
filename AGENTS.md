@@ -24,9 +24,12 @@ end to end in a browser against the real engine. Beyond that:
 - Audio goes in and out over real AES67 multicast, and mix-minus holds sample-exact
   through the round trip — but **only ever over `lo0`, against itself**. Never over a
   real NIC, never through a switch, never to or from another vendor's device.
-- **The media clock is the server's own free-running system clock.** There is no PTP.
-  That is coherent for a self-contained squawk system and wrong for anything sharing a
-  network with gear locked to a house grandmaster.
+- **The media clock is still the server's own free-running system clock.** `squawk-ptp`
+  exists and locks to a synthetic grandmaster over real sockets, but **it is not wired
+  into the RTP timestamps yet**. Until it is, squawk remains a self-contained island.
+- PTP has never seen a real grandmaster — there is none on the development network.
+  Timestamping is in userspace, so accuracy is around ±1 sample at 48 kHz, not the
+  sub-microsecond a hardware-timestamped slave achieves.
 - There is no SAP, so `aes67-external` endpoints are listened for on the group squawk
   *would have* allocated, which is right only for squawk's own clients.
 - No audio device has been opened.
@@ -137,6 +140,36 @@ IPv4 multicast copies only the **low 23 bits** of the address into the Ethernet 
 so a receiver that joined one gets both. Sequential allocation from a single base keeps
 those bits distinct. Any change to `stream_group` has to preserve that. Test:
 `group_allocation_keeps_the_low_23_bits_distinct`.
+
+### The servo must be measured on the *corrected* clock
+
+`PtpPort::poll` timestamps arrivals with `ptp_now()`, not `local_now()`. Measuring on
+the undisciplined clock gives the servo an input that never responds to its output: it
+reports the same raw offset forever, steps repeatedly, and never converges. This was
+real, and the symptom was a slave that found its grandmaster, exchanged hundreds of
+messages, and sat permanently 5 ms out.
+
+### Lock needs hysteresis
+
+Software timestamping guarantees the occasional outlier. Resetting the good-sample
+counter on one bad measurement makes lock flap between Locked and Locking, and anything
+gating on lock flaps with it. Credit one, debit four, and let the count run to twice the
+threshold. Test: `a_single_outlier_does_not_drop_lock`.
+
+### PTP binds the wildcard; RTP binds the group
+
+Opposite decisions, both correct. RTP has hundreds of streams sharing port 5004 and
+needs the kernel's destination filtering. PTP has one group per port and needs nothing —
+and on macOS the privileged-port check applies to a **specific** bind address but not the
+wildcard, so `bind(224.0.1.129:319)` returns `EACCES` where `bind(0.0.0.0:319)` succeeds.
+That presents as "Permission denied" and looks exactly like needing root, which squawk
+does not.
+
+### Don't ask for a delay measurement you cannot use
+
+`ready_for_delay_req` gates on having a completed Sync pairing. A Delay_Req sent before
+the first Sync produces a Delay_Resp that gets counted as `unmatched` — the very counter
+an operator would read as a fault.
 
 ### A debug build cannot hold the 1 ms tick
 

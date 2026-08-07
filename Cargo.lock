@@ -884,6 +884,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "squawk-ptp"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "socket2 0.5.10",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "squawk-rtp"
 version = "0.1.0"
 dependencies = [
