@@ -1,12 +1,11 @@
 # squawk
 
 > **AI-assisted project.** This codebase was created with [Claude](https://claude.com/claude-code)
-> (Anthropic), directed and reviewed by a human author. The mix engine is covered by
-> behavioural tests that assert sample-exact mix-minus, and the server and browser UI
-> have been exercised end to end against the real engine. **But every microphone is a
-> synthesised tone.** Nothing here has yet touched a network card, a sound card, a PTP
-> clock or an intercom panel — the AES67 transport, the clients and the hardware do
-> not exist yet.
+> (Anthropic), directed and reviewed by a human author. Audio goes in and out of the
+> server over real AES67 multicast, and mix-minus is asserted sample-exact through that
+> full round trip. **But it has only ever run over the loopback interface, against
+> itself.** There is no PTP, no SAP, no client, and no hardware; nothing here has met
+> another vendor's device, a real switch, or a microphone.
 
 An open **partyline intercom** system — the software half of a Green-Go / Bolero /
 Clear-Com style comms rig. A server mixes; endpoints talk and listen.
@@ -22,9 +21,9 @@ levels, mutes and ear placement instantly and locally, with no round trip to the
 |---|---|
 | Data model, config, validation (`squawk-core`) | Built and tested |
 | Mix-minus engine (`squawk-engine`) | Built and tested |
-| Server + browser UI (`squawk-server`) | Built and tested, **on simulated audio** |
+| Server + browser UI (`squawk-server`) | Built and tested |
 | AES67 packets, SDP, jitter buffer, sockets (`squawk-rtp`) | Built and tested over real UDP |
-| Transport wired into the server | Not started |
+| Transport wired into the server | **Working** — audio in and out over real multicast |
 | SAP discovery | Not started |
 | PTP clock | Not started |
 | Tray packaging (via `av-launcher`) | Not started |
@@ -114,6 +113,17 @@ send_to: 292,000 packets/sec   (3.4 us per packet) — about 292 streams at 1 ms
 Which lands just under the 320 streams a 32-endpoint system implies. That is the
 measurement that turns per-tick send batching from an optimisation into a requirement.
 
+### Addressing
+
+Multicast groups are derived from `(endpoint index, key slot)`, not from the engine's
+stream index. The engine numbers streams sequentially, so adding a key to endpoint 0
+shifts every stream after it — addressing off that number would silently re-point every
+multicast group in the building each time somebody added a key in the UI. Deriving from
+identity means adding a key moves nothing else.
+
+Reordering or deleting *endpoints* still shifts things. The real fix is to persist an
+allocation per endpoint id, and it is worth doing before anyone deploys this.
+
 ## The browser UI
 
 An assignment matrix — endpoints down, partylines across. Click a cell to give that
@@ -132,12 +142,37 @@ line is a normal thing to be in the middle of.
 
 ## Run it
 
+Without an interface, every microphone is a synthesised tone and nothing reaches the
+network — useful for looking at the UI, and the page says so in as many words:
+
 ```bash
-cargo run -p squawk-server -- --config squawk.example.toml
+cargo run --release -p squawk-server -- --config squawk.example.toml
 ```
 
-Then open <http://localhost:8477>. Every microphone is a synthesised tone — see the
-note at the foot of the page.
+With one, it receives and transmits real AES67:
+
+```bash
+cargo run --release -p squawk-server -- --config squawk.example.toml --interface 192.168.1.90
+```
+
+Either way the UI is at <http://localhost:8477>.
+
+`--interface` is required rather than auto-detected, and that is deliberate. On a
+multi-homed machine — which is every AV server — the routing table usually prefers the
+office LAN, and multicast sent the wrong way reports success and is heard by nothing.
+On the Mac this was developed on, the default route for 239.0.0.0/8 pointed at a **VPN
+tunnel**.
+
+**Run the server in release.** A debug build cannot hold the 1 ms tick: measured over
+10 seconds with 16 streams, debug ran 9802 blocks with 1.1% of ticks late, release ran
+10030 with none.
+
+To feed a stream without a client — for testing against real gear, too:
+
+```bash
+cargo run --release -p squawk-rtp --example tone -- \
+  --iface 127.0.0.1 --group 239.69.128.0 --hz 440
+```
 
 ## Layout
 

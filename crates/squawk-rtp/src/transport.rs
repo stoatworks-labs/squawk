@@ -138,9 +138,19 @@ pub struct StreamReceiver {
 impl StreamReceiver {
     /// Bind and, if `group` is multicast, join it on `iface`.
     ///
-    /// Binds to the wildcard address rather than to `group`: binding to the group
-    /// address works on Linux and fails on Windows, and binding to `iface` silently
-    /// receives nothing for multicast on several stacks.
+    /// # Why the bind address depends on the platform
+    ///
+    /// squawk puts every stream on port 5004 and tells them apart by multicast group,
+    /// so one host binds that port many times. On a socket bound to the wildcard
+    /// address, the kernel delivers datagrams for **every** group joined on that port,
+    /// not just the ones this socket joined — so each of 320 receivers would wake for
+    /// all 320 streams and discard 319 of them. That is quadratic work, and it arrives
+    /// as mysterious CPU load rather than as an error.
+    ///
+    /// Binding to the group address instead makes the kernel filter by destination.
+    /// That works on Unix and is rejected on Windows, which has to bind the wildcard
+    /// and filter in userspace — the SSRC lock below does that, correctly but at the
+    /// cost this bind exists to avoid.
     pub fn new(
         iface: Ipv4Addr,
         group: Ipv4Addr,
@@ -155,7 +165,12 @@ impl StreamReceiver {
         socket.set_reuse_address(true)?;
         #[cfg(unix)]
         socket.set_reuse_port(true)?;
-        socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
+        let bind_to = if group.is_multicast() && cfg!(unix) {
+            SocketAddrV4::new(group, port)
+        } else {
+            SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)
+        };
+        socket.bind(&bind_to.into())?;
         // Best-effort: a system that refuses the size still works, just with less slack.
         let _ = socket.set_recv_buffer_size(RECV_BUFFER_BYTES);
         if group.is_multicast() {
@@ -294,6 +309,37 @@ mod tests {
             }
         }
         assert_eq!(rx.jitter().stats().lost, 0);
+    }
+
+    #[test]
+    fn multicast_delivers_only_the_group_a_receiver_joined() {
+        // The load-bearing property of the whole addressing scheme: many receivers
+        // share one port and each gets only its own stream. Run over the loopback
+        // interface, which is MULTICAST-capable, so this needs no audio network.
+        //
+        // Note this test would pass even with the interface selection broken on a
+        // single-homed host. It is not a substitute for trying it on real hardware.
+        let port = free_port();
+        let group_a = Ipv4Addr::new(239, 69, 200, 1);
+        let group_b = Ipv4Addr::new(239, 69, 200, 2);
+
+        let mut rx_a = StreamReceiver::new(LOOPBACK, group_a, port, BLOCK, 1).unwrap();
+        let mut rx_b = StreamReceiver::new(LOOPBACK, group_b, port, BLOCK, 1).unwrap();
+
+        let mut tx_a = StreamSender::new(LOOPBACK, group_a, port, BLOCK, 96, 0xAAAA_0001, 1).unwrap();
+        tx_a.send(&[0.5; BLOCK]).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let got_a = rx_a.poll().unwrap();
+        let got_b = rx_b.poll().unwrap();
+
+        assert_eq!(got_a, 1, "the joined group's receiver got nothing");
+        assert_eq!(got_b, 0, "a receiver was delivered another group's audio");
+
+        let mut out = vec![0.0f32; BLOCK];
+        rx_a.pull(&mut out); // priming
+        assert_eq!(rx_a.pull(&mut out), Pull::Filled);
+        assert!((out[0] - 0.5).abs() < 1e-6);
     }
 
     #[test]

@@ -8,18 +8,22 @@ partyline mix-minus or a direct path. Rust workspace, MIT, public.
 fail silently.
 
 ## Status
-`squawk-core` + `squawk-engine` + `squawk-server` + `squawk-rtp` built and tested
-(the last over real UDP loopback). **But the transport is not wired into the server
-yet** — every mic is still a synthesised tone, and there is no SAP, no PTP, no audio
-I/O, no hardware. Don't describe it as working intercom.
+All four crates built and tested. Audio goes in and out over **real AES67 multicast**
+and mix-minus holds sample-exact through the round trip — but only over `lo0`, against
+itself. No PTP (media clock is the server's own), no SAP, no client, no audio device,
+no hardware. Don't describe it as working intercom.
 
 ## Commands
 ```bash
 cargo test --workspace
 cargo clippy --workspace --all-targets
-cargo run -p squawk-server -- --config squawk.example.toml   # UI on :8477
+# UI on :8477. Without --interface it runs on synthesised tones and says so.
+cargo run --release -p squawk-server -- --config squawk.example.toml --interface 127.0.0.1
+cargo run --release -p squawk-rtp --example tone -- --iface 127.0.0.1 --group 239.69.128.0
 cargo test --release -p squawk-engine --test scale -- --nocapture   # timing
 ```
+**Always run the server in release** — debug cannot hold the 1 ms tick (9802 blocks and
+1.1% late ticks over 10 s, vs 10030 and none in release).
 
 ## Layout
 - `crates/squawk-core` — data model, TOML config, validation
@@ -46,6 +50,10 @@ cargo test --release -p squawk-engine --test scale -- --nocapture   # timing
   the low 23 bits into the MAC, so a scattered scheme makes two streams share one.
 - **Jitter capacity ≠ latency.** Depth is the delay; capacity is burst headroom for a
   descheduled receive thread.
+- **Multicast groups derive from `(endpoint index, slot)`**, never the engine's stream
+  index — that shifts whenever a key is added anywhere before it.
+- **Blocks per wake stays 1 on the network.** Bursting costs every receiver jitter
+  buffer depth.
 
 ## Committed by physics
 Phones/browsers get Opus/WebRTC, never AES67 (no PTP, wifi multicast is unreliable).

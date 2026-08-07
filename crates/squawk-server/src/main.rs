@@ -4,7 +4,7 @@
 //! `av-launcher` as a tray app, the same way srt-router and flock are — this binary
 //! stays headless so that the tray shell is one shared thing rather than one per app.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -26,6 +26,19 @@ struct Args {
 
     #[arg(short, long, default_value_t = 8477)]
     port: u16,
+
+    /// Local address of the NIC on the audio network, which enables real AES67.
+    ///
+    /// Required rather than auto-detected on purpose: on a multi-homed machine the
+    /// routing table usually prefers the office LAN, and multicast sent the wrong way
+    /// reports success and is heard by nothing. Omit it to run on synthesised tones.
+    #[arg(short, long)]
+    interface: Option<Ipv4Addr>,
+
+    /// Jitter buffer depth in packets, which at the default 1 ms packet time is also
+    /// milliseconds of added latency.
+    #[arg(long, default_value_t = 2)]
+    jitter_depth: usize,
 }
 
 /// A system with nothing in it but one partyline, so a first run has somewhere to
@@ -84,7 +97,17 @@ async fn main() -> anyhow::Result<()> {
         "loaded config"
     );
 
-    let state = AppState::new(config, Some(args.config.clone()));
+    let transport = args.interface.map(|iface| squawk_server::host::TransportOptions {
+        iface,
+        jitter_depth: args.jitter_depth,
+    });
+    if transport.is_none() {
+        tracing::warn!(
+            "no --interface given: running on synthesised tones, sending nothing to the network"
+        );
+    }
+
+    let state = AppState::with_transport(config, Some(args.config.clone()), transport);
     let addr: SocketAddr = format!("{}:{}", args.bind, args.port)
         .parse()
         .with_context(|| format!("invalid bind address {}:{}", args.bind, args.port))?;

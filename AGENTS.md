@@ -21,15 +21,18 @@ Be precise about this in anything you write for the user. The engine's behaviour
 covered by tests that assert *sample-exact* mix-minus, and the server has been driven
 end to end in a browser against the real engine. Beyond that:
 
-- **`squawk-rtp` is not wired into `squawk-server`.** They are two separate working
-  things that have never met. `host.rs` still runs a `SimulatedSource`.
-- **Every microphone is a synthesised tone**, and the engine is paced off `Instant`,
-  not a media clock.
-- RTP has been sent and received over UDP **loopback only**, in tests. Never over a real
-  network, never to or from another vendor's device.
-- No PTP clock has been locked, and there is no SAP.
+- Audio goes in and out over real AES67 multicast, and mix-minus holds sample-exact
+  through the round trip — but **only ever over `lo0`, against itself**. Never over a
+  real NIC, never through a switch, never to or from another vendor's device.
+- **The media clock is the server's own free-running system clock.** There is no PTP.
+  That is coherent for a self-contained squawk system and wrong for anything sharing a
+  network with gear locked to a house grandmaster.
+- There is no SAP, so `aes67-external` endpoints are listened for on the group squawk
+  *would have* allocated, which is right only for squawk's own clients.
 - No audio device has been opened.
 - No hardware exists.
+- Without `--interface`, everything falls back to synthesised tones. The UI says so
+  prominently; keep it that way.
 
 Do not describe this project as working intercom. It is a mixer, a config UI, and a
 test bench.
@@ -134,6 +137,36 @@ IPv4 multicast copies only the **low 23 bits** of the address into the Ethernet 
 so a receiver that joined one gets both. Sequential allocation from a single base keeps
 those bits distinct. Any change to `stream_group` has to preserve that. Test:
 `group_allocation_keeps_the_low_23_bits_distinct`.
+
+### A debug build cannot hold the 1 ms tick
+
+Measured over 10 s with 16 streams: debug managed 9802 blocks with 1.1% of ticks late;
+release managed 10030 with none. If someone reports drift, dropouts or a `late_ticks`
+count climbing in the UI, **check the build profile before anything else.** The server
+is meant to be run in release.
+
+### Addressing is by identity, not by stream index
+
+`addressing::key_group(endpoint_index, slot)`. The engine's stream indices are
+sequential, so adding a key to endpoint 0 shifts every stream after it — addressing off
+that number would re-point every multicast group in the building whenever anyone added
+a key in the UI. Endpoint *reordering* still shifts things; persisting an allocation
+per endpoint id is the real fix and is not done.
+
+### A config edit rebinds every socket
+
+`AudioSource::build` runs again on rebuild, because the sockets are derived from the
+config: a new endpoint has no receiver and a new key has no sender until it does. That
+costs a glitch, which is the right trade against a silent endpoint, but it means config
+edits are not free during a show.
+
+### Blocks per wake must stay at 1 on the network
+
+Bursting 20 packets every 20 ms delivers the right number of packets and is bad
+practice: every receiver then needs a jitter buffer deep enough to absorb the burst, so
+each millisecond of burstiness here is a millisecond of latency for everyone. The
+`Pacer` sleeps to just short of the deadline and spins the rest, because
+`thread::sleep` overshoots a 1 ms period by a large and variable fraction.
 
 ### `socket2` is not a convenience
 

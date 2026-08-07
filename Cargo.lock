@@ -887,6 +887,7 @@ dependencies = [
 name = "squawk-rtp"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "socket2 0.5.10",
  "squawk-core",
  "thiserror 1.0.69",
@@ -906,6 +907,7 @@ dependencies = [
  "serde_json",
  "squawk-core",
  "squawk-engine",
+ "squawk-rtp",
  "tokio",
  "tower",
  "tracing",

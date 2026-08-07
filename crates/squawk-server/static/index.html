@@ -86,6 +86,13 @@
     letter-spacing: 0.03em; white-space: nowrap;
   }
   .badge.opus { color: #c9a2e8; background: #2a2233; }
+  .badge.sim { color: var(--warn); background: #2a2418; }
+  .badge.live-mode { color: var(--live-bright); background: #16291f; }
+  .health {
+    font-size: 0.6rem; color: #5a6068; font-variant-numeric: tabular-nums;
+    display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 2px;
+  }
+  .health .bad { color: var(--err); }
   .x {
     border: none; background: transparent; color: #5a6068; cursor: pointer;
     font-size: 0.9rem; line-height: 1; padding: 0.1rem 0.25rem; border-radius: 3px;
@@ -178,7 +185,7 @@
 </head>
 <body>
 
-<h1>squawk <span id="conn">connecting</span></h1>
+<h1>squawk <span id="mode"></span><span id="late"></span><span id="conn">connecting</span></h1>
 <div id="sub"></div>
 
 <section id="problems"></section>
@@ -223,12 +230,7 @@
   <div id="err"></div>
 </section>
 
-<div id="disclaimer">
-  <b>Simulated audio.</b> There is no transport yet. Every endpoint's microphone is a
-  synthesised tone and the engine is paced off the system clock, not a PTP-derived
-  media clock. The mixing, the mix-minus and the routing are real; the audio arriving
-  and leaving is not.
-</div>
+<div id="disclaimer"></div>
 
 <script>
 const $ = (s) => document.querySelector(s);
@@ -238,6 +240,8 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
 let state = null;
 const meters = { inputs: new Map(), buses: new Map(), outputs: new Map() };
 const talkBtns = new Map();
+const healthEls = new Map();
+let simulated = null;
 
 /* -60 dBFS at the floor, 0 dBFS full — the useful range for a comms meter. */
 function dbToPct(db) {
@@ -306,6 +310,7 @@ function renderMatrix(cfg) {
   meters.buses.clear();
   meters.outputs.clear();
   talkBtns.clear();
+  healthEls.clear();
 
   if (!cfg.endpoints.length || !cfg.partylines.length) {
     $("#matrix").innerHTML =
@@ -328,7 +333,8 @@ function renderMatrix(cfg) {
             `<span class="badge${opus ? " opus" : ""}">${opus ? "opus" : "aes67"}</span>` +
             `<span class="nm">${esc(e.name)}</span>` +
             `<button class="x" data-del-ep="${esc(e.id)}" title="Remove endpoint">×</button></div>` +
-            `<div class="meter wide" data-input="${esc(e.id)}"><i></i></div></th>`;
+            `<div class="meter wide" data-input="${esc(e.id)}"><i></i></div>` +
+            `<div class="health" data-health="${esc(e.id)}"></div></th>`;
 
     for (const p of cfg.partylines) {
       const key = e.keys.find((k) => k.target.partyline === p.id);
@@ -359,6 +365,8 @@ function renderMatrix(cfg) {
     meters.outputs.set(el.dataset.out, el.firstElementChild);
   for (const el of document.querySelectorAll("[data-talk]"))
     talkBtns.set(`${el.dataset.talk}:${el.dataset.slot}`, el);
+  for (const el of document.querySelectorAll("[data-health]"))
+    healthEls.set(el.dataset.health, el);
 }
 
 function renderDirects(cfg) {
@@ -505,6 +513,35 @@ $("#add-ep").addEventListener("submit", (ev) => {
 
 /* -------------------------------------------------------------- live meters */
 
+/* The mode line is the most important thing on the page: it is the difference
+   between "this is routing your show" and "this is a tone generator". */
+function setMode(sim, lateTicks) {
+  if (sim === simulated) {
+    if (!sim) updateLate(lateTicks);
+    return;
+  }
+  simulated = sim;
+  $("#mode").className = "badge " + (sim ? "sim" : "live-mode");
+  $("#mode").textContent = sim ? "simulated audio" : "AES67 live";
+  $("#disclaimer").innerHTML = sim
+    ? "<b>Simulated audio.</b> No transport is configured, so every endpoint's " +
+      "microphone is a synthesised tone and nothing is sent to the network. The mixing, " +
+      "the mix-minus and the routing are real; the audio arriving and leaving is not. " +
+      "Start the server with <code>--interface</code> to send and receive real AES67."
+    : "<b>AES67 live.</b> Audio is being received from and sent to the network. The " +
+      "media clock is the server's own — there is no PTP yet, so a third-party sender " +
+      "locked to a house grandmaster will drift against this and show it in the depth " +
+      "reading beside each endpoint.";
+  updateLate(lateTicks);
+}
+
+function updateLate(lateTicks) {
+  const el = $("#late");
+  if (!el) return;
+  el.textContent = lateTicks ? `${lateTicks} late ticks` : "";
+  el.className = lateTicks ? "badge sim" : "";
+}
+
 function applySnapshot(s) {
   for (const l of s.inputs) setMeter(meters.inputs.get(l.id), l.db);
   for (const l of s.buses) setMeter(meters.buses.get(l.id), l.db);
@@ -512,6 +549,23 @@ function applySnapshot(s) {
 
   const live = new Set(s.talking);
   for (const [id, btn] of talkBtns) btn.classList.toggle("live", live.has(id));
+
+  setMode(s.simulated, s.late_ticks);
+
+  for (const h of s.health || []) {
+    const el = healthEls.get(h.id);
+    if (!el) continue;
+    const bits = [`buf ${h.depth}`];
+    if (h.lost) bits.push(`<span class="bad">${h.lost} lost</span>`);
+    if (h.late) bits.push(`<span class="bad">${h.late} late</span>`);
+    if (h.resyncs) bits.push(`<span class="bad">${h.resyncs} resync</span>`);
+    if (h.foreign) bits.push(`<span class="bad">${h.foreign} foreign</span>`);
+    // Persistent drift means the sender is not on our clock, and no buffer size fixes it.
+    if (h.drift !== null && Math.abs(h.drift) > 0.5) {
+      bits.push(`<span class="bad">drift ${h.drift > 0 ? "+" : ""}${h.drift.toFixed(1)}</span>`);
+    }
+    el.innerHTML = bits.join("");
+  }
 
   if (state && s.generation !== state._generation) {
     state._generation = s.generation;

@@ -17,3 +17,6 @@ tracing = { workspace = true }
 # "all" is needed for set_reuse_port, which is what BSD/macOS actually require for
 # several receivers to share port 5004; SO_REUSEADDR alone is enough only on Linux.
 socket2 = { version = "0.5", features = ["all"] }
+
+[dev-dependencies]
+clap = { version = "4", features = ["derive"] }

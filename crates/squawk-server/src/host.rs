@@ -22,6 +22,7 @@
 //! unlike the integer indices the engine uses — and re-applies it afterwards.
 
 use std::collections::BTreeMap;
+use std::net::Ipv4Addr;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -30,11 +31,78 @@ use serde::Serialize;
 use squawk_core::Config;
 use squawk_engine::{Command, Engine};
 
+use crate::audio_io::{AudioIo, StreamHealth};
+
 /// How often the host publishes a meter snapshot. Also the UI's refresh rate.
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Blocks processed per wake-up. At 1 ms per block this is a 20 ms batch.
-const BLOCKS_PER_WAKE: usize = 20;
+/// Blocks per wake when there is no network to feed.
+///
+/// With real transport this drops to 1: a sender that emits 20 packets back to back
+/// every 20 ms is technically delivering the right number of packets and is bad
+/// practice, because the receiver's jitter buffer then has to be deep enough to absorb
+/// the whole burst. Every millisecond of burstiness added here is a millisecond of
+/// latency every receiver on the network has to carry.
+const SIMULATED_BLOCKS_PER_WAKE: usize = 20;
+
+/// How long before the deadline to stop sleeping and spin.
+///
+/// `thread::sleep` on a general-purpose OS overshoots by a variable few hundred
+/// microseconds, which at a 1 ms period is a large fraction of the whole tick. Sleeping
+/// to just short of the deadline and busy-waiting the remainder trades a little CPU for
+/// packet spacing that a receiver will accept.
+const SPIN_MARGIN: Duration = Duration::from_micros(400);
+
+/// Where the server's audio comes from and goes to.
+pub struct TransportOptions {
+    /// Address of the NIC on the audio network. Not optional — see
+    /// `squawk_rtp::transport` for what happens when the OS picks.
+    pub iface: Ipv4Addr,
+    /// Jitter buffer depth in packets, and therefore in milliseconds at the default
+    /// packet time. The latency-versus-robustness dial.
+    pub jitter_depth: usize,
+}
+
+enum AudioSource {
+    /// No transport configured: synthesised tones in, nothing out.
+    Simulated(SimulatedSource),
+    Network(Box<AudioIo>),
+}
+
+/// Paces the loop off a fixed schedule, sleeping most of the way and spinning the rest.
+struct Pacer {
+    period: Duration,
+    next: Instant,
+    spin: bool,
+}
+
+impl Pacer {
+    fn new(period: Duration, spin: bool) -> Self {
+        Self { period, next: Instant::now(), spin }
+    }
+
+    /// Wait for the next deadline. Returns true if we had already missed it.
+    fn wait(&mut self) -> bool {
+        self.next += self.period;
+        let now = Instant::now();
+        if self.next <= now {
+            // Give up the lost time rather than sprinting to catch up: sprinting turns
+            // one late tick into a burst, which is worse for every receiver than the
+            // single gap it is trying to repair.
+            self.next = now;
+            return true;
+        }
+        let remaining = self.next - now;
+        let margin = if self.spin { SPIN_MARGIN } else { Duration::ZERO };
+        if remaining > margin {
+            std::thread::sleep(remaining - margin);
+        }
+        while self.spin && Instant::now() < self.next {
+            std::hint::spin_loop();
+        }
+        false
+    }
+}
 
 /// A level reading tagged with the id it belongs to.
 ///
@@ -64,6 +132,14 @@ pub struct Snapshot {
     pub talking: Vec<String>,
     /// Blocks processed since start — a liveness check for the audio loop.
     pub blocks: u64,
+    /// True when there is no transport and every microphone is a synthesised tone.
+    /// The UI says so prominently; nothing about this should be quiet.
+    pub simulated: bool,
+    /// Per-endpoint receive health. Empty when simulated.
+    pub health: Vec<StreamHealth>,
+    /// Ticks that missed their deadline. Non-zero means the machine cannot keep up,
+    /// which shows up as packet spacing a receiver may not tolerate.
+    pub late_ticks: u64,
 }
 
 enum HostCommand {
@@ -82,14 +158,17 @@ pub struct Host {
 
 impl Host {
     /// Spawn the host thread for a config that has already been validated.
-    pub fn spawn(config: Config) -> Self {
+    ///
+    /// With `transport` set, the thread binds real AES67 sockets and ticks once per
+    /// packet time. Without it, it synthesises tones and ticks in lazier batches.
+    pub fn spawn(config: Config, transport: Option<TransportOptions>) -> Self {
         let (tx, rx) = mpsc::channel();
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
 
         let thread_snapshot = Arc::clone(&snapshot);
         std::thread::Builder::new()
             .name("squawk-engine".into())
-            .spawn(move || run(config, rx, thread_snapshot))
+            .spawn(move || run(config, transport, rx, thread_snapshot))
             .expect("spawn engine thread");
 
         Self { tx, snapshot }
@@ -168,7 +247,67 @@ fn linear_to_db(v: f32) -> f32 {
     }
 }
 
-fn run(mut config: Config, rx: Receiver<HostCommand>, snapshot: Arc<Mutex<Snapshot>>) {
+impl AudioSource {
+    /// Build the source for a config. Falls back to simulation if the sockets will not
+    /// bind, because a server that refuses to start is less useful than one that starts
+    /// and says loudly that it has no audio.
+    fn build(config: &Config, engine: &Engine, transport: &Option<TransportOptions>) -> Self {
+        match transport {
+            Some(opts) => match AudioIo::new(config, engine, opts.iface, opts.jitter_depth) {
+                Ok(io) => AudioSource::Network(Box::new(io)),
+                Err(err) => {
+                    tracing::error!(%err, iface = %opts.iface, "could not bind AES67 sockets; falling back to simulation");
+                    AudioSource::Simulated(SimulatedSource::new(
+                        config.endpoints.len(),
+                        engine.block_size(),
+                        config.system.sample_rate as f32,
+                    ))
+                }
+            },
+            None => AudioSource::Simulated(SimulatedSource::new(
+                config.endpoints.len(),
+                engine.block_size(),
+                config.system.sample_rate as f32,
+            )),
+        }
+    }
+
+    fn is_simulated(&self) -> bool {
+        matches!(self, AudioSource::Simulated(_))
+    }
+
+    /// Receive side: fill one block for every endpoint.
+    fn fill(&mut self, block: usize, out: &mut [f32]) {
+        match self {
+            AudioSource::Simulated(s) => out.copy_from_slice(s.fill(block)),
+            AudioSource::Network(io) => {
+                io.poll();
+                io.pull_inputs(out);
+            }
+        }
+    }
+
+    /// Transmit side. The simulated source has nowhere to send to.
+    fn emit(&mut self, engine_out: &[f32]) {
+        if let AudioSource::Network(io) = self {
+            io.send_outputs(engine_out);
+        }
+    }
+
+    fn health(&self) -> Vec<StreamHealth> {
+        match self {
+            AudioSource::Simulated(_) => Vec::new(),
+            AudioSource::Network(io) => io.health(),
+        }
+    }
+}
+
+fn run(
+    mut config: Config,
+    transport: Option<TransportOptions>,
+    rx: Receiver<HostCommand>,
+    snapshot: Arc<Mutex<Snapshot>>,
+) {
     let mut engine = match Engine::new(&config) {
         Ok(e) => e,
         Err(err) => {
@@ -181,11 +320,24 @@ fn run(mut config: Config, rx: Receiver<HostCommand>, snapshot: Arc<Mutex<Snapsh
     let mut talk: BTreeMap<(String, u8), bool> = BTreeMap::new();
     let mut generation = 0u64;
     let mut blocks = 0u64;
+    let mut late_ticks = 0u64;
 
-    let mut source = SimulatedSource::new(
-        config.endpoints.len(),
-        engine.block_size(),
-        config.system.sample_rate as f32,
+    let mut source = AudioSource::build(&config, &engine, &transport);
+    let block = engine.block_size();
+    let mut mic_buf = vec![0.0f32; config.endpoints.len() * block];
+
+    // On the network, one block per wake: bursting 20 packets every 20 ms would force
+    // every receiver on the system to carry 20 ms of extra jitter buffer.
+    let blocks_per_wake = if source.is_simulated() { SIMULATED_BLOCKS_PER_WAKE } else { 1 };
+    let period = Duration::from_nanos(
+        (blocks_per_wake * block) as u64 * 1_000_000_000 / config.system.sample_rate as u64,
+    );
+    let mut pacer = Pacer::new(period, !source.is_simulated());
+    tracing::info!(
+        simulated = source.is_simulated(),
+        period_us = period.as_micros() as u64,
+        blocks_per_wake,
+        "audio loop starting"
     );
 
     // Peak-hold accumulators, reset each time we publish.
@@ -194,7 +346,6 @@ fn run(mut config: Config, rx: Receiver<HostCommand>, snapshot: Arc<Mutex<Snapsh
     let mut out_peak = vec![0.0f32; engine.stream_count()];
 
     let mut last_publish = Instant::now();
-    let mut next_wake = Instant::now();
 
     loop {
         while let Ok(cmd) = rx.try_recv() {
@@ -205,11 +356,11 @@ fn run(mut config: Config, rx: Receiver<HostCommand>, snapshot: Arc<Mutex<Snapsh
                             config = *new_config;
                             engine = new_engine;
                             generation += 1;
-                            source = SimulatedSource::new(
-                                config.endpoints.len(),
-                                engine.block_size(),
-                                config.system.sample_rate as f32,
-                            );
+                            // Rebinding every socket costs a glitch, but the sockets
+                            // are derived from the config: a new endpoint has no
+                            // receiver and a new key has no sender until this happens.
+                            source = AudioSource::build(&config, &engine, &transport);
+                            mic_buf = vec![0.0; config.endpoints.len() * engine.block_size()];
                             in_peak = vec![0.0; config.endpoints.len()];
                             bus_peak = vec![0.0; config.partylines.len()];
                             out_peak = vec![0.0; engine.stream_count()];
@@ -255,9 +406,10 @@ fn run(mut config: Config, rx: Receiver<HostCommand>, snapshot: Arc<Mutex<Snapsh
         }
 
         let block = engine.block_size();
-        for _ in 0..BLOCKS_PER_WAKE {
-            let input = source.fill(block);
-            engine.process(input);
+        for _ in 0..blocks_per_wake {
+            source.fill(block, &mut mic_buf);
+            engine.process(&mic_buf);
+            source.emit(engine.output());
             blocks += 1;
 
             let m = engine.meters();
@@ -305,6 +457,9 @@ fn run(mut config: Config, rx: Receiver<HostCommand>, snapshot: Arc<Mutex<Snapsh
                     .map(|((id, slot), _)| format!("{id}:{slot}"))
                     .collect(),
                 blocks,
+                simulated: source.is_simulated(),
+                health: source.health(),
+                late_ticks,
             };
             *snapshot.lock().expect("snapshot lock") = snap;
 
@@ -314,15 +469,8 @@ fn run(mut config: Config, rx: Receiver<HostCommand>, snapshot: Arc<Mutex<Snapsh
             last_publish = Instant::now();
         }
 
-        // Pace off a fixed schedule rather than sleeping for the batch duration, so
-        // scheduling jitter does not accumulate into drift.
-        next_wake += Duration::from_millis(BLOCKS_PER_WAKE as u64);
-        let now = Instant::now();
-        if next_wake > now {
-            std::thread::sleep(next_wake - now);
-        } else {
-            // Fell behind — give up the lost time rather than sprinting to catch up.
-            next_wake = now;
+        if pacer.wait() {
+            late_ticks += 1;
         }
     }
 }

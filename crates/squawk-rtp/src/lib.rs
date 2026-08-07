@@ -19,11 +19,13 @@
 //! - [`jitter`] — the receive buffer that turns a packet stream into aligned blocks.
 //! - [`transport`] — the UDP sockets, and the multicast group allocation.
 
+pub mod addressing;
 pub mod jitter;
 pub mod packet;
 pub mod sdp;
 pub mod transport;
 
+pub use addressing::{key_group, key_ssrc, mic_group, mic_ssrc, KEY_BASE, MIC_BASE};
 pub use jitter::{JitterBuffer, JitterStats, Pull, Push};
 pub use packet::{RtpError, RtpHeader, RTP_HEADER_LEN};
 pub use sdp::{Direction, Encoding, RefClock, SdpError, StreamDescription};

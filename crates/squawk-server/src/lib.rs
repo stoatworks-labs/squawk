@@ -6,6 +6,7 @@
 //! (tens of endpoints), and a UI that cannot drift out of step with the server is worth
 //! far more than the bytes saved by returning deltas.
 
+pub mod audio_io;
 pub mod host;
 
 use std::path::PathBuf;
@@ -36,7 +37,15 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: Config, path: Option<PathBuf>) -> Self {
-        let host = Host::spawn(config.clone());
+        Self::with_transport(config, path, None)
+    }
+
+    pub fn with_transport(
+        config: Config,
+        path: Option<PathBuf>,
+        transport: Option<host::TransportOptions>,
+    ) -> Self {
+        let host = Host::spawn(config.clone(), transport);
         Self {
             config: Arc::new(RwLock::new(config)),
             host,

@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 squawk-core = { workspace = true }
 squawk-engine = { workspace = true }
+squawk-rtp = { workspace = true }
 diag = { path = "../diag" }
 
 axum = { version = "0.7", features = ["ws"] }
