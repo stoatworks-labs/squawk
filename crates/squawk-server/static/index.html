@@ -88,6 +88,9 @@
   .badge.opus { color: #c9a2e8; background: #2a2233; }
   .badge.sim { color: var(--warn); background: #2a2418; }
   .badge.live-mode { color: var(--live-bright); background: #16291f; }
+  .badge.ptp-locked { color: #9fd8ff; background: #16232b; }
+  .badge.ptp-locking { color: var(--warn); background: #2a2418; }
+  .badge.ptp-none { color: var(--faint); background: #21242a; }
   .health {
     font-size: 0.6rem; color: #5a6068; font-variant-numeric: tabular-nums;
     display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 2px;
@@ -185,7 +188,7 @@
 </head>
 <body>
 
-<h1>squawk <span id="mode"></span><span id="late"></span><span id="conn">connecting</span></h1>
+<h1>squawk <span id="mode"></span><span id="late"></span><span id="ptp"></span><span id="conn">connecting</span></h1>
 <div id="sub"></div>
 
 <section id="problems"></section>
@@ -542,6 +545,31 @@ function updateLate(lateTicks) {
   el.className = lateTicks ? "badge sim" : "";
 }
 
+/* The clock. Without a locked grandmaster squawk's timestamps are internally
+   consistent and agree with no other manufacturer's device, which is worth saying
+   out loud rather than leaving to be discovered on site. */
+function setPtp(p) {
+  const el = $("#ptp");
+  if (!p) {
+    el.className = "badge ptp-none";
+    el.textContent = "own clock";
+    el.title = "No PTP domain configured — timestamps will not line up with other AES67 devices.";
+    return;
+  }
+  const us = (p.offset_nanos / 1000).toFixed(1);
+  el.className = "badge " + (p.state === "locked" ? "ptp-locked" : "ptp-locking");
+  el.textContent = p.state === "locked"
+    ? `PTP locked ${us > 0 ? "+" : ""}${us} \u00b5s`
+    : p.grandmaster ? `PTP ${p.state}` : `PTP: no grandmaster on domain ${p.domain}`;
+  el.title = [
+    `domain ${p.domain}`,
+    p.grandmaster ? `grandmaster ${p.grandmaster}` : "no grandmaster seen",
+    `${p.masters_seen} master(s) announcing`,
+    `offset ${us} us, path delay ${(p.delay_nanos / 1000).toFixed(1)} us`,
+    `${p.steps} step(s), ${p.realignments} timeline realignment(s)`,
+  ].join("\n");
+}
+
 function applySnapshot(s) {
   for (const l of s.inputs) setMeter(meters.inputs.get(l.id), l.db);
   for (const l of s.buses) setMeter(meters.buses.get(l.id), l.db);
@@ -551,6 +579,7 @@ function applySnapshot(s) {
   for (const [id, btn] of talkBtns) btn.classList.toggle("live", live.has(id));
 
   setMode(s.simulated, s.late_ticks);
+  setPtp(s.ptp);
 
   for (const h of s.health || []) {
     const el = healthEls.get(h.id);

@@ -8,10 +8,10 @@ partyline mix-minus or a direct path. Rust workspace, MIT, public.
 fail silently.
 
 ## Status
-Five crates built and tested. Audio goes in and out over **real AES67 multicast** and
-mix-minus holds sample-exact through the round trip — but only over `lo0`, against
-itself. `squawk-ptp` locks to a *synthetic* grandmaster (~10 us residual) but **is not
-wired into the media clock**, which is still the server's own free-running one. No SAP,
+Five crates built and tested. Audio goes in and out over **real AES67 multicast**,
+mix-minus holds sample-exact through the round trip, and **PTP drives the media clock**
+so RTP timestamps are PTP time in samples. But all of it only over `lo0` against a
+*synthetic* grandmaster — never a real NIC, switch, or another vendor's device. No SAP,
 no client, no audio device, no hardware. Don't describe it as working intercom.
 
 ## Commands
@@ -21,6 +21,8 @@ cargo clippy --workspace --all-targets
 # UI on :8477. Without --interface it runs on synthesised tones and says so.
 cargo run --release -p squawk-server -- --config squawk.example.toml --interface 127.0.0.1
 cargo run --release -p squawk-rtp --example tone -- --iface 127.0.0.1 --group 239.69.128.0
+cargo run --release -p squawk-ptp --example grandmaster -- --iface 127.0.0.1  # bench clock
+cargo run --release -p squawk-ptp --example ptpmon -- --iface <ip> --domain 0  # what's out there
 cargo test --release -p squawk-engine --test scale -- --nocapture   # timing
 ```
 **Always run the server in release** — debug cannot hold the 1 ms tick (9802 blocks and
@@ -61,6 +63,12 @@ cargo test --release -p squawk-engine --test scale -- --nocapture   # timing
 - **Lock has hysteresis** — one outlier must not drop it.
 - **PTP binds the wildcard, RTP binds the group** — opposite, both right. On macOS a
   privileged-port bind is denied on a specific address but allowed on the wildcard.
+- **PTP runs on its own thread**, never the audio loop: polling at audio rate quantises
+  Sync timestamps and PTP reads that asymmetry as offset (~150 us, never locks).
+- **Pace the audio loop from PTP**, not just the timestamps, or a local crystal error
+  accumulates into a snap-back glitch every couple of minutes.
+- **`PtpPort` must carry its own domain** into Delay_Reqs — sending them on domain 0
+  works by accident there and fails silently everywhere else.
 
 ## Committed by physics
 Phones/browsers get Opus/WebRTC, never AES67 (no PTP, wifi multicast is unreliable).

@@ -7,6 +7,7 @@
 //! far more than the bytes saved by returning deltas.
 
 pub mod audio_io;
+pub mod clock;
 pub mod host;
 
 use std::path::PathBuf;

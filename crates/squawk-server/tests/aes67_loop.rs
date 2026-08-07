@@ -51,7 +51,7 @@ fn mix_minus_survives_a_round_trip_over_real_multicast() {
     let state = AppState::with_transport(
         two_on_a_partyline(),
         None,
-        Some(TransportOptions { iface: LOOPBACK, jitter_depth: 2 }),
+        Some(TransportOptions { iface: LOOPBACK, jitter_depth: 2, ptp_domain: None }),
     );
     // Let the host thread bind its sockets before anything is sent at them.
     std::thread::sleep(Duration::from_millis(200));

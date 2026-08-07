@@ -110,15 +110,30 @@ impl StreamSender {
         self.timestamp
     }
 
-    /// Send one block. The RTP timestamp advances by the block size, not by byte count.
+    /// Send one block on the sender's own free-running timestamp counter.
+    ///
+    /// Fine for a test signal or a self-contained system. For anything sharing a
+    /// network with other AES67 devices use [`StreamSender::send_at`] with a
+    /// PTP-derived timestamp — `a=mediaclk:direct=0` means the timestamp *is* the media
+    /// clock, and a free-running one agrees with nobody.
     pub fn send(&mut self, samples: &[f32]) -> io::Result<usize> {
+        let ts = self.timestamp;
+        let sent = self.send_at(samples, ts)?;
+        self.timestamp = self.timestamp.wrapping_add(self.block as u32);
+        Ok(sent)
+    }
+
+    /// Send one block carrying an explicit RTP timestamp.
+    ///
+    /// The sequence number still advances on its own — it counts packets, whereas the
+    /// timestamp locates them in time, and conflating the two is how a stream ends up
+    /// with timestamps that jump while sequence numbers stay tidy.
+    pub fn send_at(&mut self, samples: &[f32], timestamp: u32) -> io::Result<usize> {
         debug_assert_eq!(samples.len(), self.block);
-        let header = RtpHeader::new(self.payload_type, self.sequence, self.timestamp, self.ssrc);
+        let header = RtpHeader::new(self.payload_type, self.sequence, timestamp, self.ssrc);
         let n = packet::write_packet(&header, samples, &mut self.scratch);
         let sent = self.socket.send_to(&self.scratch[..n], self.dest)?;
-
         self.sequence = self.sequence.wrapping_add(1);
-        self.timestamp = self.timestamp.wrapping_add(self.block as u32);
         Ok(sent)
     }
 }

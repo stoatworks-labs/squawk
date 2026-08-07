@@ -142,13 +142,18 @@ impl AudioIo {
         }
     }
 
-    /// Transmit one block of every key stream.
-    pub fn send_outputs(&mut self, engine_out: &[f32]) -> usize {
+    /// Transmit one block of every key stream, all carrying the same RTP timestamp.
+    ///
+    /// One timestamp for the whole tick, not one per stream: these blocks *are* the
+    /// same instant, and AES67 receivers use the timestamp to align streams from one
+    /// sender. Letting each stream keep its own counter would make them mutually
+    /// skewed by however long the send loop took.
+    pub fn send_outputs_at(&mut self, engine_out: &[f32], timestamp: u32) -> usize {
         let mut sent = 0;
         for (i, key) in self.keys.iter_mut().enumerate() {
             let Some(tx) = key else { continue };
             let slice = &engine_out[i * self.block..(i + 1) * self.block];
-            match tx.send(slice) {
+            match tx.send_at(slice, timestamp) {
                 Ok(_) => sent += 1,
                 Err(err) => {
                     self.send_errors += 1;

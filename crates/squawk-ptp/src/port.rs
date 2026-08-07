@@ -14,6 +14,8 @@
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use socket2::{Domain, Protocol, Socket, Type};
@@ -21,6 +23,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use crate::message::{write_delay_req, Message, PortIdentity, Timestamp};
 use crate::servo::LockState;
 use crate::slave::{Event, SlaveState, SlaveStats};
+use crate::shared::SharedClock;
 use crate::{PORT_EVENT, PORT_GENERAL, PTP_PRIMARY};
 
 /// PTP is not meant to be routed: the default profile uses a TTL of 1 so a stray
@@ -44,11 +47,18 @@ pub struct PtpPort {
     event: UdpSocket,
     general: UdpSocket,
     state: SlaveState,
+    /// The domain this port is on.
+    ///
+    /// Stored rather than re-derived: Delay_Reqs have to carry it, and a Delay_Req sent
+    /// on the wrong domain is silently ignored by the master. No delay measurement ever
+    /// completes, the servo never gets past its first step, and it presents as a
+    /// grandmaster that announces but will not answer.
+    domain: u8,
     buf: Vec<u8>,
 
-    /// Monotonic base, and the PTP-format time at that instant.
-    epoch_instant: Instant,
-    epoch_nanos: u128,
+    /// The disciplined clock. Shared, so the audio thread can read the time without
+    /// touching this port or waiting on it.
+    clock: Arc<SharedClock>,
 
     delay_seq: u16,
     last_delay_req: Instant,
@@ -104,9 +114,9 @@ impl PtpPort {
             event,
             general,
             state: SlaveState::new(identity, domain),
+            domain,
             buf: vec![0u8; 1500],
-            epoch_instant: Instant::now(),
-            epoch_nanos,
+            clock: Arc::new(SharedClock::new(epoch_nanos)),
             delay_seq: 0,
             last_delay_req: Instant::now(),
             // The AES67 media profile's default. Faster buys little: path delay changes
@@ -114,15 +124,6 @@ impl PtpPort {
             // multicast response that every slave on the domain has to filter.
             delay_interval: Duration::from_secs(1),
         })
-    }
-
-    /// Local time, undisciplined.
-    fn local_now(&self) -> Timestamp {
-        let total = self.epoch_nanos + self.epoch_instant.elapsed().as_nanos();
-        Timestamp {
-            seconds: (total / 1_000_000_000) as u64,
-            nanos: (total % 1_000_000_000) as u32,
-        }
     }
 
     /// Local time corrected by the servo — PTP time as we currently believe it.
@@ -134,15 +135,12 @@ impl PtpPort {
     /// converges. Timestamping with corrected time makes each measurement the residual
     /// error, which is what a PI controller is for.
     pub fn ptp_now(&self) -> Timestamp {
-        let local = self.local_now();
-        let corrected = local.seconds as i128 * 1_000_000_000
-            + local.nanos as i128
-            + self.state.servo().local_to_ptp_offset() as i128;
-        let corrected = corrected.max(0) as u128;
-        Timestamp {
-            seconds: (corrected / 1_000_000_000) as u64,
-            nanos: (corrected % 1_000_000_000) as u32,
-        }
+        self.clock.now()
+    }
+
+    /// A handle to the disciplined clock, readable from any thread.
+    pub fn clock(&self) -> Arc<SharedClock> {
+        Arc::clone(&self.clock)
     }
 
     /// How often to send Delay_Reqs. The default of one second is the AES67 media
@@ -156,10 +154,55 @@ impl PtpPort {
         self.state.servo().state()
     }
 
+    /// Run this port on its own thread, polling far faster than audio rate.
+    ///
+    /// Returns the shared clock and a handle. PTP must not be drained on the audio
+    /// thread: see [`crate::shared`] for the accuracy that costs.
+    pub fn spawn(mut self) -> (Arc<SharedClock>, PtpHandle) {
+        let clock = self.clock();
+        let stop = Arc::new(AtomicBool::new(false));
+        let status = Arc::new(Mutex::new(self.status()));
+
+        let thread_stop = Arc::clone(&stop);
+        let thread_status = Arc::clone(&status);
+        let handle = std::thread::Builder::new()
+            .name("squawk-ptp".into())
+            .spawn(move || {
+                let mut last_status = Instant::now();
+                while !thread_stop.load(Ordering::Relaxed) {
+                    if let Err(err) = self.poll() {
+                        tracing::warn!(%err, "PTP poll failed");
+                    }
+                    // Status allocates, so it is published at UI rate rather than at
+                    // poll rate.
+                    if last_status.elapsed() >= Duration::from_millis(100) {
+                        *thread_status.lock().expect("ptp status lock") = self.status();
+                        last_status = Instant::now();
+                    }
+                    // Fast enough that the quantisation it adds to a Sync receive
+                    // timestamp is small next to the software-timestamping noise
+                    // already present.
+                    std::thread::sleep(Duration::from_micros(100));
+                }
+            })
+            .expect("spawn PTP thread");
+
+        (clock, PtpHandle { stop, status, handle: Some(handle) })
+    }
+
+    /// How many times the clock has been stepped.
+    ///
+    /// Cheap, unlike [`PtpPort::status`], which allocates a string for the grandmaster
+    /// id — that matters because the audio thread reads this every tick to know whether
+    /// a timestamp discontinuity is legitimate.
+    pub fn steps(&self) -> u64 {
+        self.state.servo().steps()
+    }
+
     pub fn status(&self) -> PtpStatus {
         let m = self.state.last_measurement();
         PtpStatus {
-            domain: 0,
+            domain: self.domain,
             grandmaster: self.state.master().map(|m| m.grandmaster.to_string()),
             masters_seen: self.state.masters_seen(),
             state: self.state.servo().state(),
@@ -209,6 +252,10 @@ impl PtpPort {
             events.push(ev);
         }
         self.maybe_send_delay_req(now)?;
+
+        let servo = self.state.servo();
+        self.clock
+            .publish(servo.local_to_ptp_offset(), servo.steps(), servo.samples());
         Ok(events)
     }
 
@@ -222,7 +269,9 @@ impl PtpPort {
 
         let mut packet = [0u8; 44];
         self.delay_seq = self.delay_seq.wrapping_add(1);
-        write_delay_req(self.state.identity(), self.status().domain, self.delay_seq, &mut packet);
+        // `self.domain`, not `self.status().domain` — status() also allocates a string
+        // for the grandmaster id, which has no business being on this path.
+        write_delay_req(self.state.identity(), self.domain, self.delay_seq, &mut packet);
 
         let dest = SocketAddrV4::new(PTP_PRIMARY, PORT_EVENT);
         self.event.send_to(&packet, dest)?;
@@ -234,6 +283,29 @@ impl PtpPort {
         self.state.on_delay_req_sent(self.delay_seq, t3);
         self.last_delay_req = now;
         Ok(())
+    }
+}
+
+/// Handle to a [`PtpPort`] running on its own thread. Dropping it stops the thread.
+pub struct PtpHandle {
+    stop: Arc<AtomicBool>,
+    status: Arc<Mutex<PtpStatus>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PtpHandle {
+    /// The most recently published status, at most 100 ms old.
+    pub fn status(&self) -> PtpStatus {
+        self.status.lock().expect("ptp status lock").clone()
+    }
+}
+
+impl Drop for PtpHandle {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
     }
 }
 
@@ -279,3 +351,4 @@ mod tests {
         );
     }
 }
+

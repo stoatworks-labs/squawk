@@ -5,11 +5,17 @@
 //! appears to work against one vendor's grandmaster and quietly fails against another,
 //! which is not something to discover on a network you cannot single-step.
 
+use std::collections::BTreeMap;
+
 use crate::bmca::{BestMaster, MasterDataset};
 use crate::message::{Body, Message, MessageType, PortIdentity, Timestamp};
 use crate::servo::{measure, DelaySample, LockState, Measurement, Servo, SyncSample};
 
 use std::time::Instant;
+
+/// Syncs held waiting for their Follow_Ups. At the AES67 profile's 8 Sync/s this is a
+/// second of backlog, which is far more than a healthy system ever needs.
+const MAX_PENDING_SYNCS: usize = 8;
 
 /// Something the caller needs to act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,8 +46,15 @@ pub struct SlaveState {
     servo: Servo,
     master: Option<MasterDataset>,
 
-    /// Local receive time of the Sync we are waiting on a Follow_Up for.
-    pending_sync: Option<(u16, Timestamp)>,
+    /// Receive times of Syncs still waiting for their Follow_Ups, by sequence id.
+    ///
+    /// A map rather than a single slot, because `poll` drains the event port (Syncs)
+    /// completely before the general port (Follow_Ups) — it has to, or the general
+    /// port's processing time lands in the Syncs' timestamps. With one slot, any
+    /// backlog leaves only the newest Sync pending and every earlier Follow_Up is
+    /// discarded as unmatched, so a moment of scheduling pressure costs most of the
+    /// measurements rather than one.
+    pending_sync: BTreeMap<u16, Timestamp>,
     /// The most recent completed Sync pairing.
     last_sync: Option<SyncSample>,
     /// Sequence and local transmit time of the Delay_Req in flight.
@@ -59,7 +72,7 @@ impl SlaveState {
             bmca: BestMaster::new(),
             servo: Servo::new(),
             master: None,
-            pending_sync: None,
+            pending_sync: BTreeMap::new(),
             last_sync: None,
             pending_delay: None,
             last_measurement: None,
@@ -123,14 +136,21 @@ impl SlaveState {
                     // The originTimestamp of a two-step Sync is not the transmit time;
                     // it is a placeholder. Using it would build the whole measurement
                     // on a number the master explicitly said to ignore.
-                    self.pending_sync = Some((msg.header.sequence_id, local_rx));
+                    self.pending_sync.insert(msg.header.sequence_id, local_rx);
+                    // Bounded: a master whose Follow_Ups never arrive must not grow this
+                    // without limit.
+                    while self.pending_sync.len() > MAX_PENDING_SYNCS {
+                        let oldest = *self.pending_sync.keys().next().expect("non-empty");
+                        self.pending_sync.remove(&oldest);
+                        self.stats.unmatched += 1;
+                    }
                 } else {
                     self.last_sync = Some(SyncSample {
                         t1: *origin,
                         t2: local_rx,
                         correction_nanos: msg.header.correction_nanos(),
                     });
-                    self.pending_sync = None;
+                    self.pending_sync.clear();
                 }
                 None
             }
@@ -140,19 +160,23 @@ impl SlaveState {
                     return None;
                 }
                 self.stats.follow_ups += 1;
-                match self.pending_sync.take() {
-                    // Match on sequence id, not on arrival order. Follow_Ups can be
-                    // reordered against the next Sync on a busy network, and pairing by
-                    // arrival then attributes one Sync's receive time to another's
-                    // transmit time — an error the size of the Sync interval.
-                    Some((seq, t2)) if seq == msg.header.sequence_id => {
+                // Match on sequence id, not on arrival order. Follow_Ups can be
+                // reordered against the next Sync on a busy network, and pairing by
+                // arrival then attributes one Sync's receive time to another's transmit
+                // time — an error the size of the Sync interval.
+                match self.pending_sync.remove(&msg.header.sequence_id) {
+                    Some(t2) => {
                         self.last_sync = Some(SyncSample {
                             t1: *precise_origin,
                             t2,
                             correction_nanos: msg.header.correction_nanos(),
                         });
+                        // Anything older will never be paired now.
+                        self.pending_sync.retain(|seq, _| {
+                            msg.header.sequence_id.wrapping_sub(*seq) > u16::MAX / 2
+                        });
                     }
-                    Some(_) | None => {
+                    None => {
                         self.stats.unmatched += 1;
                     }
                 }
@@ -225,7 +249,7 @@ impl SlaveState {
         self.master = best;
         if changed {
             // Everything in flight belonged to the old master's timeline.
-            self.pending_sync = None;
+            self.pending_sync.clear();
             self.last_sync = None;
             self.pending_delay = None;
             Some(Event::MasterChanged)

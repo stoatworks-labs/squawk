@@ -13,7 +13,8 @@ endpoints talk and listen. Each endpoint has up to 10 keys; each key is its own 
 carrying either a partyline (mix-minus) or a direct point-to-point path.
 
 Rust workspace: `squawk-core` (model), `squawk-engine` (mixer), `squawk-rtp` (AES67
-packets, SDP, jitter buffer, sockets), `squawk-server` (host + HTTP/WS + browser UI).
+packets, SDP, jitter buffer, sockets), `squawk-ptp` (PTPv2 slave, BMCA, servo, media
+clock), `squawk-server` (host + HTTP/WS + browser UI).
 
 ## 2. What is actually verified
 
@@ -24,12 +25,14 @@ end to end in a browser against the real engine. Beyond that:
 - Audio goes in and out over real AES67 multicast, and mix-minus holds sample-exact
   through the round trip — but **only ever over `lo0`, against itself**. Never over a
   real NIC, never through a switch, never to or from another vendor's device.
-- **The media clock is still the server's own free-running system clock.** `squawk-ptp`
-  exists and locks to a synthetic grandmaster over real sockets, but **it is not wired
-  into the RTP timestamps yet**. Until it is, squawk remains a self-contained island.
-- PTP has never seen a real grandmaster — there is none on the development network.
-  Timestamping is in userspace, so accuracy is around ±1 sample at 48 kHz, not the
-  sub-microsecond a hardware-timestamped slave achieves.
+- **PTP drives the media clock**: RTP timestamps are PTP time counted in samples, and
+  the audio loop is paced by PTP so the rate is the grandmaster's.
+- **PTP has never seen a real grandmaster** — there is none on the development network,
+  so every measurement is against `squawk_ptp::testing::Grandmaster`, which shares this
+  machine's system clock. It cannot exercise real path asymmetry, switch residence time,
+  or another vendor's reading of the standard.
+- Timestamping is in userspace: ~±40 µs measured, so 1–2 samples at 48 kHz rather than
+  the sub-microsecond a hardware-timestamped slave achieves.
 - There is no SAP, so `aes67-external` endpoints are listened for on the group squawk
   *would have* allocated, which is right only for squawk's own clients.
 - No audio device has been opened.
@@ -92,8 +95,8 @@ test catches it.
 
 Mix-minus is exact because it subtracts the same samples that were added. Whatever
 feeds `process()` must already have resampled and aligned every input into the server's
-clock domain. That is the jitter buffer's job, and it does not exist yet. An engine fed
-unaligned inputs fails quietly.
+clock domain. That is the jitter buffer's job — `squawk_rtp::jitter` — and the engine
+has no way to check. An engine fed unaligned inputs fails quietly.
 
 ### Talk intent lives in the host, not the engine
 
@@ -140,6 +143,39 @@ IPv4 multicast copies only the **low 23 bits** of the address into the Ethernet 
 so a receiver that joined one gets both. Sequential allocation from a single base keeps
 those bits distinct. Any change to `stream_group` has to preserve that. Test:
 `group_allocation_keeps_the_low_23_bits_distinct`.
+
+### PTP does not go on the audio thread
+
+Draining the PTP sockets once per audio tick quantises every Sync receive timestamp to
+the tick, while the slave's own Delay_Reqs go out immediately. PTP assumes a symmetric
+path, cannot tell the difference, and reports half that asymmetry as clock offset —
+measured at ~150 µs on a 1 ms tick, which never reached lock. On its own thread polling
+at 100 µs the same setup settles at ±40 µs. `PtpPort::spawn` returns a `SharedClock` the
+audio thread reads with two relaxed atomic loads.
+
+### Pace the audio loop from PTP, not just the timestamps
+
+Stamping from PTP while ticking off a local crystal accumulates error at roughly a
+sample a second per 20 ppm, so every couple of minutes the timeline is a packet or two
+ahead of the time it claims and has to be snapped back — a glitch on every stream, with
+nothing in the logs tying it to the crystal. `MediaPacer` waits on PTP time.
+
+### `PtpPort` must carry its own domain
+
+Delay_Reqs have to be sent on the configured domain. Reading it from a hardcoded `0`
+works by accident on domain 0 and fails completely everywhere else: the master ignores
+them, no delay measurement ever completes, the servo sits on its first step forever, and
+it presents as a grandmaster that announces but will not answer. SMPTE 2059-2
+installations commonly run domain 127. Test:
+`the_slave_locks_on_a_domain_other_than_zero`.
+
+### The timeline snaps on a step, and only on a step
+
+A timestamp discontinuity tells a receiver the stream restarted. The servo makes small
+corrections continuously as it settles; a tight realignment threshold turns every one of
+them into a glitch on every stream. `MediaTimeline` snaps when the clock *steps* and
+otherwise lets the pacer absorb corrections, with a quarter-second safety bound behind
+that.
 
 ### The servo must be measured on the *corrected* clock
 

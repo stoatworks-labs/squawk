@@ -35,10 +35,13 @@ pub mod bmca;
 pub mod message;
 pub mod port;
 pub mod servo;
+pub mod shared;
 pub mod slave;
+pub mod testing;
 
 pub use bmca::{BestMaster, MasterDataset};
-pub use port::{PtpPort, PtpStatus};
+pub use port::{PtpHandle, PtpPort, PtpStatus};
+pub use shared::SharedClock;
 pub use slave::{Event, SlaveState, SlaveStats};
 pub use message::{
     Body, ClockIdentity, ClockQuality, Header, Message, MessageType, PortIdentity, PtpError,

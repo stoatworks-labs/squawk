@@ -39,6 +39,14 @@ struct Args {
     /// milliseconds of added latency.
     #[arg(long, default_value_t = 2)]
     jitter_depth: usize,
+
+    /// PTP domain to slave the media clock to. Requires --interface.
+    ///
+    /// Omit it and squawk runs on its own clock: internally consistent, and agreeing
+    /// with no other manufacturer's device on the network. AES67's default domain is 0;
+    /// SMPTE 2059-2 installations usually use 127.
+    #[arg(long)]
+    ptp_domain: Option<u8>,
 }
 
 /// A system with nothing in it but one partyline, so a first run has somewhere to
@@ -100,11 +108,20 @@ async fn main() -> anyhow::Result<()> {
     let transport = args.interface.map(|iface| squawk_server::host::TransportOptions {
         iface,
         jitter_depth: args.jitter_depth,
+        ptp_domain: args.ptp_domain,
     });
     if transport.is_none() {
         tracing::warn!(
             "no --interface given: running on synthesised tones, sending nothing to the network"
         );
+    } else if args.ptp_domain.is_none() {
+        tracing::warn!(
+            "no --ptp-domain given: the media clock is this server's own, so timestamps \
+             will not line up with other AES67 devices"
+        );
+    }
+    if args.ptp_domain.is_some() && args.interface.is_none() {
+        anyhow::bail!("--ptp-domain needs --interface: PTP has to know which NIC to join on");
     }
 
     let state = AppState::with_transport(config, Some(args.config.clone()), transport);

@@ -1,11 +1,11 @@
 # squawk
 
 > **AI-assisted project.** This codebase was created with [Claude](https://claude.com/claude-code)
-> (Anthropic), directed and reviewed by a human author. Audio goes in and out of the
-> server over real AES67 multicast, and mix-minus is asserted sample-exact through that
-> full round trip. **But it has only ever run over the loopback interface, against
-> itself.** There is no PTP, no SAP, no client, and no hardware; nothing here has met
-> another vendor's device, a real switch, or a microphone.
+> (Anthropic), directed and reviewed by a human author. Audio goes in and out over real
+> AES67 multicast with mix-minus asserted sample-exact through the round trip, and PTP
+> drives the media clock. **But all of it has only ever run over the loopback interface,
+> against a grandmaster this project wrote itself.** No SAP, no client, no hardware —
+> nothing here has met another vendor's device, a real switch, or a microphone.
 
 An open **partyline intercom** system — the software half of a Green-Go / Bolero /
 Clear-Com style comms rig. A server mixes; endpoints talk and listen.
@@ -25,7 +25,7 @@ levels, mutes and ear placement instantly and locally, with no round trip to the
 | AES67 packets, SDP, jitter buffer, sockets (`squawk-rtp`) | Built and tested over real UDP |
 | Transport wired into the server | **Working** — audio in and out over real multicast |
 | PTP slave (`squawk-ptp`) | Built; locks to a synthetic grandmaster |
-| PTP wired into the media clock | Not started |
+| PTP driving the media clock | **Working** — RTP timestamps are PTP time |
 | SAP discovery | Not started |
 | Tray packaging (via `av-launcher`) | Not started |
 | Desktop client station | Not started |
@@ -134,10 +134,25 @@ from different manufacturers without negotiating anything.
 
 `squawk-ptp` implements the slave side of IEEE 1588-2008: message coding, the Best
 Master Clock Algorithm, and a PI servo. It locks to a synthetic grandmaster over real
-sockets in about 0.6 s, settling around **10 µs** of residual offset.
+sockets in about 0.6 s and **drives the server's media clock**: every outgoing RTP
+timestamp is PTP time counted in samples, measured within 2.4 ms of the grandmaster
+across a run, with the gap wandering by only 55 samples.
 
-**It is not yet driving the media clock.** RTP timestamps still come from the server's
-own free-running clock.
+Two things had to be true for that, and only one is obvious:
+
+- **The timestamps come from PTP.** Obvious.
+- **The audio loop is paced by PTP too.** Less obvious, and the failure is slow enough
+  to look like something else. If timestamps advance one block per tick while the ticks
+  come from a local crystal 20 ppm fast, the error accumulates at about a sample a
+  second — so every couple of minutes the timestamps are a packet or two ahead of the
+  time they claim and have to be snapped back. That is a glitch on every stream, with
+  nothing in the logs connecting it to the crystal.
+
+**PTP runs on its own thread**, not the audio loop. Draining it once per 1 ms tick
+quantises every Sync receive timestamp to the tick while the slave's own Delay_Reqs go
+out immediately — an asymmetry PTP cannot distinguish from clock offset. Measured, that
+was ~150 µs of offset that was not there, and it never reached lock. On its own thread
+the same setup settles at **±40 µs**.
 
 ### Software timestamping, and what it costs
 
@@ -187,10 +202,13 @@ cargo run --release -p squawk-server -- --config squawk.example.toml
 With one, it receives and transmits real AES67:
 
 ```bash
-cargo run --release -p squawk-server -- --config squawk.example.toml --interface 192.168.1.90
+cargo run --release -p squawk-server -- --config squawk.example.toml \
+  --interface 192.168.1.90 --ptp-domain 0
 ```
 
-Either way the UI is at <http://localhost:8477>.
+Without `--ptp-domain` the media clock is the server's own: internally consistent, and
+agreeing with no other manufacturer's device. Either way the UI is at
+<http://localhost:8477>, and it says which clock it is on.
 
 `--interface` is required rather than auto-detected, and that is deliberate. On a
 multi-homed machine — which is every AV server — the routing table usually prefers the
@@ -209,11 +227,19 @@ cargo run --release -p squawk-rtp --example tone -- \
   --iface 127.0.0.1 --group 239.69.128.0 --hz 440
 ```
 
+And for a bench with no grandmaster on it (never leave this on a real network — it
+announces a GPS-class clock and will win the BMCA against most equipment):
+
+```bash
+cargo run --release -p squawk-ptp --example grandmaster -- --iface 127.0.0.1
+```
+
 ## Layout
 
 ```
 crates/squawk-core      Data model, TOML config, validation
 crates/squawk-engine    Mix-minus engine and per-stream limiter
+crates/squawk-ptp       PTPv2 slave, BMCA, servo, disciplined media clock
 crates/squawk-rtp       RTP/L24, AES67 SDP, jitter buffer, UDP sockets
 crates/squawk-server    Engine host, HTTP/WebSocket API, browser UI
 crates/diag             Vendored fleet diagnostics

@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 squawk-core = { workspace = true }
 squawk-engine = { workspace = true }
+squawk-ptp = { workspace = true }
 squawk-rtp = { workspace = true }
 diag = { path = "../diag" }
 
@@ -25,4 +26,5 @@ clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+socket2 = { version = "0.5", features = ["all"] }
 http-body-util = "0.1"
