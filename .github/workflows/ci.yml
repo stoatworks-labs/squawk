@@ -1,0 +1,63 @@
+name: ci
+
+# Until this existed the repo had no workflow with a `pull_request` trigger at
+# all — so Dependabot bumps arrived with no status check to gate a merge on and
+# simply accumulated. Both open bumps are cargo ones (toml, thiserror).
+#
+# `cargo fmt --check` is deliberately not a step: it is already failing on main
+# (crates/squawk-core/src/validate.rs among others), and gating every bump on
+# pre-existing formatting drift would block the PRs this workflow exists to
+# unblock. Run `cargo fmt --all` once, then add the step.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        # Two groups are skipped, for two different reasons.
+        #
+        # `a_fully_loaded_system_mixes_correctly_and_in_time` is a wall-clock
+        # assertion — one second of audio must mix in under 0.5 s in a debug
+        # build — and a shared hosted runner cannot hold that: it came in at
+        # 0.796 s here. It is a smoke alarm for an accidental O(n²), and the way
+        # to run it is the way AGENTS.md says, in release and on a quiet machine:
+        #
+        #     cargo test --release -p squawk-engine --test scale -- --nocapture
+        #
+        # Wiring a benchmark into a merge gate would just teach everyone to
+        # ignore a red check.
+        #
+        # The four PTP tests are skipped because they all reach
+        # squawk-ptp/src/testing.rs's `join()`, which calls join_multicast_v4 —
+        # and a hosted runner's loopback does not carry multicast, so it panics
+        # in the mock grandmaster thread before the test under it runs. That is the runner's
+        # network, not this repo's code, and the protocol logic underneath is
+        # still covered by the 48 unit tests that do not open a socket. They
+        # would be better expressed as #[ignore] or gated on an env var, so the
+        # skip list here does not have to be kept in step with them by hand.
+        run: >
+          cargo test --
+          --skip a_fully_loaded_system_mixes_correctly_and_in_time
+          --skip port::tests::a_port_can_join_the_ptp_groups_on_loopback
+          --skip the_slave_locks_to_a_grandmaster_over_real_sockets
+          --skip the_slave_locks_on_a_domain_other_than_zero
+          --skip outgoing_timestamps_are_ptp_time_counted_in_samples
