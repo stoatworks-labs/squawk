@@ -46,9 +46,10 @@ jobs:
         # Wiring a benchmark into a merge gate would just teach everyone to
         # ignore a red check.
         #
-        # The three PTP tests are skipped because they need real multicast
-        # sockets and a hosted runner's loopback does not carry multicast —
-        # IP_ADD_MEMBERSHIP on 127.0.0.1 fails outright. That is the runner's
+        # The four PTP tests are skipped because they all reach
+        # squawk-ptp/src/testing.rs's `join()`, which calls join_multicast_v4 —
+        # and a hosted runner's loopback does not carry multicast, so it panics
+        # in the mock grandmaster thread before the test under it runs. That is the runner's
         # network, not this repo's code, and the protocol logic underneath is
         # still covered by the 48 unit tests that do not open a socket. They
         # would be better expressed as #[ignore] or gated on an env var, so the
@@ -59,3 +60,4 @@ jobs:
           --skip port::tests::a_port_can_join_the_ptp_groups_on_loopback
           --skip the_slave_locks_to_a_grandmaster_over_real_sockets
           --skip the_slave_locks_on_a_domain_other_than_zero
+          --skip outgoing_timestamps_are_ptp_time_counted_in_samples
