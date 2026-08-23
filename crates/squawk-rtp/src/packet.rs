@@ -142,7 +142,7 @@ fn i24_to_f32(raw: i32) -> f32 {
 /// Encode float samples as big-endian L24 into `out`, which must be `3 * samples.len()`.
 pub fn encode_l24(samples: &[f32], out: &mut [u8]) {
     debug_assert_eq!(out.len(), samples.len() * L24_BYTES);
-    for (s, chunk) in samples.iter().zip(out.chunks_exact_mut(L24_BYTES)) {
+    for (s, chunk) in samples.iter().zip(out.as_chunks_mut::<L24_BYTES>().0.iter_mut()) {
         let v = f32_to_i24(*s);
         // Big-endian, network order — AES67 audio is always most-significant byte first.
         chunk[0] = (v >> 16) as u8;
@@ -157,7 +157,7 @@ pub fn decode_l24(payload: &[u8], out: &mut [f32]) -> Result<(), RtpError> {
         return Err(RtpError::PartialSample(payload.len()));
     }
     debug_assert_eq!(out.len(), payload.len() / L24_BYTES);
-    for (chunk, o) in payload.chunks_exact(L24_BYTES).zip(out.iter_mut()) {
+    for (chunk, o) in payload.as_chunks::<L24_BYTES>().0.iter().zip(out.iter_mut()) {
         // Sign-extend by assembling into the top 24 bits of an i32 and shifting back.
         let raw = ((chunk[0] as i32) << 24 | (chunk[1] as i32) << 16 | (chunk[2] as i32) << 8) >> 8;
         *o = i24_to_f32(raw);
