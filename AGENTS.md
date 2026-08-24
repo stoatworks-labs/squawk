@@ -290,3 +290,10 @@ See the README status table. Next up is the AES67 transport — RTP tx/rx, jitte
 SDP/SAP and PTP. That is also what replaces `SimulatedSource` and the `Instant`-based
 pacer in `host.rs`, and what finally satisfies the aligned-input precondition the whole
 mix-minus design rests on.
+
+## Notes
+
+`docs/NOTES.md` carries this repo's working notes — current status, decisions
+already made, and the traps that have actually bitten. Read it before changing
+anything non-obvious. Cross-cutting fleet knowledge lives in
+[fleet-notes](https://github.com/stoatworks-labs/fleet-notes).
