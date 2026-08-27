@@ -861,7 +861,7 @@ name = "squawk-core"
 version = "0.1.0"
 dependencies = [
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.19",
  "toml",
 ]
 
@@ -870,7 +870,7 @@ name = "squawk-engine"
 version = "0.1.0"
 dependencies = [
  "squawk-core",
- "thiserror 1.0.69",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -879,7 +879,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "socket2",
- "thiserror 1.0.69",
+ "thiserror 2.0.19",
  "tracing",
 ]
 
@@ -890,7 +890,7 @@ dependencies = [
  "clap",
  "socket2",
  "squawk-core",
- "thiserror 1.0.69",
+ "thiserror 2.0.19",
  "tracing",
 ]
 
