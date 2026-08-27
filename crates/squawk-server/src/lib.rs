@@ -413,7 +413,7 @@ async fn push_meters(mut socket: WebSocket, state: AppState) {
         let Ok(text) = serde_json::to_string(&snapshot) else {
             continue;
         };
-        if socket.send(Message::Text(text)).await.is_err() {
+        if socket.send(Message::Text(text.into())).await.is_err() {
             break;
         }
     }
@@ -425,9 +425,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/state", get(get_state))
         .route("/api/meters", get(get_meters))
         .route("/api/partylines", post(add_partyline))
-        .route("/api/partylines/:id", axum::routing::delete(delete_partyline))
+        .route("/api/partylines/{id}", axum::routing::delete(delete_partyline))
         .route("/api/endpoints", post(add_endpoint))
-        .route("/api/endpoints/:id", axum::routing::delete(delete_endpoint))
+        .route("/api/endpoints/{id}", axum::routing::delete(delete_endpoint))
         .route("/api/endpoint-settings", post(update_endpoint))
         .route("/api/assign", post(assign))
         .route("/api/unassign", post(unassign))
