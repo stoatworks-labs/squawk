@@ -26,5 +26,5 @@ clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-socket2 = { version = "0.5", features = ["all"] }
+socket2 = { version = "0.6", features = ["all"] }
 http-body-util = "0.1"
