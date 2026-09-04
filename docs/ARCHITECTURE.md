@@ -73,11 +73,16 @@ running.
 | Endpoint kind | Transport | Streams |
 |---|---|---|
 | `desktop`, `hardware`, `aes67-external` | AES67: L24 RTP, 1 ms, PTP | One per key, up to 10 |
-| `mobile`, `browser` | Opus over WebRTC | One folded stereo mix |
+| `mobile` | Opus over unicast RTP | One folded stereo mix |
+| `browser` | Opus over WebRTC | One folded stereo mix |
 
 The split is forced, not preferred. A phone has no PTP, and wifi multicast is
 transmitted at the basic rate with no retransmission — AES67 over wifi does not degrade,
 it disintegrates. Trying to put a phone on the AES67 leg is a dead end; don't.
+
+The Opus leg is designed in detail in [MOBILE-LEG.md](MOBILE-LEG.md), which splits it
+further: a native unicast RTP transport for the Android client, and WebRTC for browsers
+and off-LAN, over one shared fold-down and resampler.
 
 **The engine is unaware of any of this.** It emits one stream per key, always. The
 fold-down for Opus endpoints happens downstream by summing that endpoint's streams with
