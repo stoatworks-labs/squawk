@@ -15,6 +15,10 @@ either a **partyline** (the bus, minus that endpoint's own voice) or a **direct*
 point-to-point path. Because the keys arrive separately, a panel changes its own key
 levels, mutes and ear placement instantly and locally, with no round trip to the server.
 
+![The squawk browser UI on the example show: an eight-endpoint by four-partyline assignment matrix with talk buttons and meters, a direct line, and the simulated-audio badge](docs/screenshots/matrix.png)
+
+<sub>The browser UI on the example show — eight endpoints across four partylines, each key with its own talk button and a meter of what it hears, and a direct line between Stage Manager and Producer. Running with no interface given, so the audio is synthesised tones and nothing reaches the network, which the page says in its own badges.</sub>
+
 ## Status
 
 | Piece | State |
