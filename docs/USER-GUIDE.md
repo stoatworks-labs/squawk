@@ -3,6 +3,10 @@
 squawk is an **open partyline intercom** — the software half of a Green-Go / Bolero / Clear-Com
 style comms rig. A server mixes; endpoints talk and listen.
 
+![The browser UI on the example show — eight endpoints across four partylines, each key with its own talk button and a meter of what it hears, and a direct lin…](screenshots/matrix.png)
+
+*The browser UI on the example show — eight endpoints across four partylines, each key with its own talk button and a meter of what it hears, and a direct line between Stage Manager and Producer. Running with no interface, so the audio is synthesised tones and nothing reaches the network, as the page's own badges say. The only rig it has mixed is this machine over loopback.*
+
 Each endpoint gets up to **10 keys**, and each key is its own AES67 stream carrying either a
 **partyline** (the bus, minus that endpoint's own voice) or a **direct** point-to-point path.
 Because the keys arrive separately, **a panel changes its own key levels, mutes and ear placement
