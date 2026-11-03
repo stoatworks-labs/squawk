@@ -10,6 +10,8 @@
 An open **partyline intercom** system: the software half of a Green-Go / Bolero / Clear-Com
 style comms rig. A server does the mixing, and the endpoints talk and listen.
 
+The [project page](https://stoatworks-labs.com/software/squawk/) has the [user guide](https://stoatworks-labs.com/software/squawk/guide/).
+
 Each endpoint gets up to **10 keys**, and each key is its own AES67 stream carrying either a
 **partyline** (the bus, minus that endpoint's own voice) or a **direct** point-to-point path.
 Because the keys arrive separately, a panel changes its own key levels, mutes and ear placement
